@@ -1,0 +1,37 @@
+# PostgreSQL with Alembic Migrations
+# Based on official PostgreSQL image
+
+FROM postgres:15-alpine
+
+# Set labels
+LABEL maintainer="Evolution of Todo Team"
+LABEL description="PostgreSQL database with migrations"
+LABEL version="1.0.0"
+
+# Install additional tools
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    bash
+
+# Create migrations directory
+RUN mkdir -p /docker-entrypoint-initdb.d
+
+# Copy initialization scripts
+COPY backend/alembic/ /app/alembic/
+COPY backend/alembic.ini /app/
+COPY infra/docker/init-db.sh /docker-entrypoint-initdb.d/
+
+# Make script executable
+RUN chmod +x /docker-entrypoint-initdb.d/init-db.sh
+
+# Expose PostgreSQL port
+EXPOSE 5432
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
+  CMD pg_isready -U ${POSTGRES_USER:-evolution_todo_user} || exit 1
+
+# Use official entrypoint
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["postgres"]

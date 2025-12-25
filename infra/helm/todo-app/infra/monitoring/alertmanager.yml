@@ -1,0 +1,48 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'job']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: 'slack-notifications'
+  routes:
+    - matchers:
+        - severity =~ "critical|warning"
+      receiver: 'slack-notifications'
+      continue: true
+    - matchers:
+        - severity = "critical"
+      receiver: 'pagerduty-notifications'
+
+receivers:
+  - name: 'slack-notifications'
+    slack_configs:
+      - send_resolved: true
+        text: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}\n{{ end }}"
+        api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+        channel: '#alerts'
+        username: 'Prometheus'
+        icon_emoji: ':warning:'
+        title: '{{ .CommonAnnotations.summary }}'
+        pretext: 'Firing: {{ len .Alerts }} alerts'
+  - name: 'pagerduty-notifications'
+    pagerduty_configs:
+      - send_resolved: true
+        routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY'
+        client: 'Prometheus'
+        client_url: 'http://localhost:9090'
+        description: '{{ .CommonAnnotations.summary }}'
+        details:
+          firing: '{{ template "pagerduty.default.instances" .Alerts.Firing }}'
+          num_firing: '{{ .Alerts.Firing | len }}'
+          num_resolved: '{{ .Alerts.Resolved | len }}'
+          description: '{{ .CommonAnnotations.description }}'
+
+inhibit_rules:
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ['alertname', 'namespace']

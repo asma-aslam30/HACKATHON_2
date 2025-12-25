@@ -1,0 +1,45 @@
+# Dapr Metrics Configuration
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: dapr-config
+spec:
+  tracing:
+    samplingRate: "1"
+    zipkin:
+      endpointAddress: "http://jaeger:9411/api/v2/spans"
+  metric:
+    enabled: true
+  httpPipeline:
+    handlers:
+    - name: tracing
+      type: middleware.http.tracing
+  features:
+    - name: ServiceInvocation
+      enabled: true
+    - name: StateManagement
+      enabled: true
+    - name: PubSub
+      enabled: true
+    - name: InputBindings
+      enabled: true
+    - name: OutputBindings
+      enabled: true
+---
+# Dapr Component for Observability
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: tracing
+spec:
+  type: exporters.zipkin
+  version: v1
+  metadata:
+  - name: enabled
+    value: "true"
+  - name: exporterType
+    value: "zipkin"
+  - name: endpointAddress
+    value: "http://jaeger:9411/api/v2/spans"
+  - name: propagation
+    value: "w3c"

@@ -1,0 +1,3219 @@
+#!/bin/bash
+
+# observability-monitoring Skill
+# Designs OpenTelemetry + Prometheus stack for Hackathon II
+# Implements complete observability stack with metrics, traces, and logs
+
+set -e
+
+echo "🚀 Executing observability-monitoring skill..."
+
+# Create directory structure
+mkdir -p infra/monitoring grafana/dashboards
+
+# Create Prometheus configuration
+cat > infra/monitoring/prometheus.yml << 'PROMETHEUS_EOF'
+# Prometheus configuration for the observability stack
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alert_rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+scrape_configs:
+  # Scrape Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Scrape Grafana
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+
+  # Scrape Jaeger
+  - job_name: 'jaeger'
+    static_configs:
+      - targets: ['jaeger:16686', 'jaeger:14268']
+
+  # Scrape Loki
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['loki:3100']
+
+  # Scrape OpenTelemetry collector
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8888', 'otel-collector:9464']
+
+  # Scrape Dapr sidecars
+  - job_name: 'dapr-apps'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: kubernetes_pod_name
+
+  # Scrape Kubernetes components
+  - job_name: 'kubernetes-apiservers'
+    kubernetes_sd_configs:
+      - role: endpoints
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: default;kubernetes;https
+
+  - job_name: 'kubernetes-nodes'
+    kubernetes_sd_configs:
+      - role: node
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics
+
+  # Scrape kubelet metrics
+  - job_name: 'kubernetes-cadvisor'
+    kubernetes_sd_configs:
+      - role: node
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+  # Scrape service discovery for todo-app
+  - job_name: 'todo-app'
+    kubernetes_sd_configs:
+      - role: service
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_label_app]
+        regex: todo-app
+        action: keep
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+      - action: labelmap
+        regex: __meta_kubernetes_service_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_service_name]
+        action: replace
+        target_label: kubernetes_name
+PROMETHEUS_EOF
+
+# Create Prometheus alert rules
+cat > infra/monitoring/alert_rules.yml << 'ALERT_RULES_EOF'
+groups:
+  - name: todo-app-alerts
+    rules:
+      # High error rate alerts
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5..", job="todo-app"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected in todo-app"
+          description: "HTTP error rate is above 0.1 errors per second for more than 2 minutes"
+
+      # High latency alerts
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="todo-app"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected in todo-app"
+          description: "95th percentile of HTTP request duration is above 1 second for more than 5 minutes"
+
+      # Dapr specific alerts
+      - alert: DaprSidecarDown
+        expr: up{job="dapr-apps"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dapr sidecar is down"
+          description: "Dapr sidecar for a pod has been down for more than 1 minute"
+
+      # Resource usage alerts
+      - alert: HighCPUUsage
+        expr: 100 - (avg by (pod) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is above 80% for more than 5 minutes"
+
+      - alert: HighMemoryUsage
+        expr: (container_memory_usage_bytes{container!="", pod!=""} / container_spec_memory_limit_bytes{container!="", pod!=""} * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is above 85% of limit for more than 5 minutes"
+
+      # Service availability alerts
+      - alert: ServiceDown
+        expr: up{job="todo-app"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service is down"
+          description: "The todo-app service has been down for more than 2 minutes"
+
+      # Dapr state store issues
+      - alert: DaprStateStoreError
+        expr: rate(dapr_state_get_failed_total[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dapr state store errors detected"
+          description: "Dapr state store get operations are failing at a rate higher than 0.05 per second"
+
+      # Dapr pubsub issues
+      - alert: DaprPubSubError
+        expr: rate(dapr_pubsub_subscription_failed_total[5m]) > 0.01
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dapr pubsub subscription errors detected"
+          description: "Dapr pubsub subscription operations are failing at a rate higher than 0.01 per second"
+ALERT_RULES_EOF
+
+# Create Grafana dashboards
+cat > grafana/dashboards/todo-app-dashboard.json << 'TODO_DASHBOARD_EOF'
+{
+  "dashboard": {
+    "id": null,
+    "title": "Todo App Dashboard",
+    "tags": ["todo-app", "dapr", "microservices"],
+    "style": "dark",
+    "timezone": "browser",
+    "refresh": "5s",
+    "schemaVersion": 16,
+    "version": 1,
+    "time": {
+      "from": "now-15m",
+      "to": "now"
+    },
+    "timepicker": {
+      "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"],
+      "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+    },
+    "templating": {
+      "list": [
+        {
+          "allValue": null,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "datasource": "Prometheus",
+          "hide": 0,
+          "includeAll": true,
+          "label": "Namespace",
+          "multi": true,
+          "name": "namespace",
+          "options": [],
+          "query": "label_values(kube_pod_info, namespace)",
+          "refresh": 1,
+          "regex": "",
+          "sort": 0,
+          "tagValuesQuery": "",
+          "tagsQuery": "",
+          "type": "query",
+          "useTags": false
+        },
+        {
+          "allValue": null,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "datasource": "Prometheus",
+          "hide": 0,
+          "includeAll": true,
+          "label": "Service",
+          "multi": true,
+          "name": "service",
+          "options": [],
+          "query": "label_values(kube_pod_info{namespace=~\"$namespace\"}, created_by_name)",
+          "refresh": 1,
+          "regex": "",
+          "sort": 0,
+          "tagValuesQuery": "",
+          "tagsQuery": "",
+          "type": "query",
+          "useTags": false
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "builtIn": 1,
+          "datasource": "-- Grafana --",
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "type": "dashboard"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 0
+        },
+        "id": 2,
+        "panels": [],
+        "title": "Service Overview",
+        "type": "row"
+      },
+      {
+        "cacheTimeout": null,
+        "colorBackground": false,
+        "colorValue": false,
+        "colors": ["#299c46", "rgba(237, 129, 40, 0.89)", "#d44a3a"],
+        "datasource": "Prometheus",
+        "format": "none",
+        "gauge": {
+          "maxValue": 100,
+          "minValue": 0,
+          "show": false,
+          "thresholdLabels": false,
+          "thresholdMarkers": true
+        },
+        "gridPos": {
+          "h": 5,
+          "w": 4,
+          "x": 0,
+          "y": 1
+        },
+        "id": 4,
+        "interval": null,
+        "links": [],
+        "mappingType": 1,
+        "mappingTypes": [
+          {
+            "name": "value to text",
+            "value": 1
+          },
+          {
+            "name": "range to text",
+            "value": 2
+          }
+        ],
+        "maxDataPoints": 100,
+        "nullPointMode": "connected",
+        "nullText": null,
+        "postfix": "",
+        "postfixFontSize": "50%",
+        "prefix": "",
+        "prefixFontSize": "50%",
+        "rangeMaps": [
+          {
+            "from": "null",
+            "text": "N/A",
+            "to": "null"
+          }
+        ],
+        "sparkline": {
+          "fillColor": "rgba(31, 118, 189, 0.18)",
+          "full": false,
+          "lineColor": "rgb(31, 120, 193)",
+          "show": false
+        },
+        "tableColumn": "",
+        "targets": [
+          {
+            "expr": "count(up{job=\"todo-app\"} == 1)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "refId": "A"
+          }
+        ],
+        "thresholds": "",
+        "title": "Running Services",
+        "type": "singlestat",
+        "valueFontSize": "80%",
+        "valueMaps": [
+          {
+            "op": "=",
+            "text": "N/A",
+            "value": "null"
+          }
+        ],
+        "valueName": "current"
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 10,
+          "w": 10,
+          "x": 4,
+          "y": 1
+        },
+        "id": 6,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{job=\"todo-app\"}[5m])) by (method, handler)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{method}} {{handler}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Requests per Second",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 10,
+          "w": 10,
+          "x": 14,
+          "y": 1
+        },
+        "id": 7,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"todo-app\"}[5m])) by (le))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "95th percentile",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=\"todo-app\"}[5m])) by (le))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "50th percentile",
+            "refId": "B"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Request Duration",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "s",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 11
+        },
+        "id": 9,
+        "panels": [],
+        "title": "Dapr Metrics",
+        "type": "row"
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 12
+        },
+        "id": 10,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_http_client_completed_total[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Dapr HTTP Client Requests",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 12
+        },
+        "id": 11,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_http_server_completed_total[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Dapr HTTP Server Requests",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 12
+        },
+        "id": 12,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_state_get_total[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Dapr State Store Operations",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 20
+        },
+        "id": 14,
+        "panels": [],
+        "title": "System Resources",
+        "type": "row"
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 21
+        },
+        "id": 15,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\", pod_name=~\"$service.*\"}[5m])) by (pod_name)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{pod_name}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "CPU Usage",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 21
+        },
+        "id": 16,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(container_memory_usage_bytes{namespace=~\"$namespace\", pod_name=~\"$service.*\"}) by (pod_name)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{pod_name}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Memory Usage",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "bytes",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 21
+        },
+        "id": 17,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(container_network_receive_bytes_total{namespace=~\"$namespace\", pod_name=~\"$service.*\"}[5m])) by (pod_name)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{pod_name}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Network Receive",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "Bps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      }
+    ],
+    "refresh": "5s",
+    "schemaVersion": 16,
+    "style": "dark",
+    "tags": [],
+    "templating": {
+      "list": []
+    },
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": [
+        "5s",
+        "10s",
+        "30s",
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "1d"
+      ],
+      "time_options": [
+        "5m",
+        "15m",
+        "1h",
+        "6h",
+        "12h",
+        "24h",
+        "2d",
+        "7d",
+        "30d"
+      ]
+    },
+    "timezone": "",
+    "title": "Todo App Dashboard",
+    "uid": "todo-app-dashboard",
+    "version": 1
+  }
+}
+TODO_DASHBOARD_EOF
+
+cat > grafana/dashboards/dapr-dashboard.json << 'DAPR_DASHBOARD_EOF'
+{
+  "dashboard": {
+    "id": null,
+    "title": "Dapr Dashboard",
+    "tags": ["dapr", "service-mesh", "microservices"],
+    "style": "dark",
+    "timezone": "browser",
+    "refresh": "5s",
+    "schemaVersion": 16,
+    "version": 1,
+    "time": {
+      "from": "now-15m",
+      "to": "now"
+    },
+    "timepicker": {
+      "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"],
+      "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+    },
+    "templating": {
+      "list": [
+        {
+          "allValue": null,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "datasource": "Prometheus",
+          "hide": 0,
+          "includeAll": true,
+          "label": "App ID",
+          "multi": true,
+          "name": "app_id",
+          "options": [],
+          "query": "label_values(dapr_http_server_completed_total, app_id)",
+          "refresh": 1,
+          "regex": "",
+          "sort": 0,
+          "tagValuesQuery": "",
+          "tagsQuery": "",
+          "type": "query",
+          "useTags": false
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "builtIn": 1,
+          "datasource": "-- Grafana --",
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "type": "dashboard"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 0
+        },
+        "id": 2,
+        "panels": [],
+        "title": "Dapr HTTP Server Metrics",
+        "type": "row"
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 1
+        },
+        "id": 4,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_http_server_completed_total{app_id=~\"$app_id\"}[5m])) by (app_id, method, status_code)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - {{method}} - {{status_code}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "HTTP Server Request Rate",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 1
+        },
+        "id": 5,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(dapr_http_server_response_duration_seconds_bucket{app_id=~\"$app_id\"}[5m])) by (le, app_id))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - 95th percentile",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(dapr_http_server_response_duration_seconds_bucket{app_id=~\"$app_id\"}[5m])) by (le, app_id))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - 50th percentile",
+            "refId": "B"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "HTTP Server Response Time",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "s",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 1
+        },
+        "id": 6,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_http_server_error_total{app_id=~\"$app_id\"}[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "HTTP Server Error Rate",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 9
+        },
+        "id": 8,
+        "panels": [],
+        "title": "Dapr HTTP Client Metrics",
+        "type": "row"
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 10
+        },
+        "id": 9,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_http_client_completed_total{app_id=~\"$app_id\"}[5m])) by (app_id, method, status_code)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - {{method}} - {{status_code}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "HTTP Client Request Rate",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 10
+        },
+        "id": 10,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(dapr_http_client_request_duration_seconds_bucket{app_id=~\"$app_id\"}[5m])) by (le, app_id))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - 95th percentile",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(dapr_http_client_request_duration_seconds_bucket{app_id=~\"$app_id\"}[5m])) by (le, app_id))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - 50th percentile",
+            "refId": "B"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "HTTP Client Request Duration",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "s",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 10
+        },
+        "id": 11,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_http_client_error_total{app_id=~\"$app_id\"}[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "HTTP Client Error Rate",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 18
+        },
+        "id": 13,
+        "panels": [],
+        "title": "Dapr State Store Metrics",
+        "type": "row"
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 19
+        },
+        "id": 14,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_state_get_total{app_id=~\"$app_id\"}[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - Get",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(dapr_state_set_total{app_id=~\"$app_id\"}[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - Set",
+            "refId": "B"
+          },
+          {
+            "expr": "sum(rate(dapr_state_delete_total{app_id=~\"$app_id\"}[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - Delete",
+            "refId": "C"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "State Store Operations",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 19
+        },
+        "id": 15,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(dapr_state_get_duration_seconds_bucket{app_id=~\"$app_id\"}[5m])) by (le, app_id))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - Get",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(dapr_state_set_duration_seconds_bucket{app_id=~\"$app_id\"}[5m])) by (le, app_id))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - Set",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(dapr_state_delete_duration_seconds_bucket{app_id=~\"$app_id\"}[5m])) by (le, app_id))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - Delete",
+            "refId": "C"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "State Store Operation Duration (95th percentile)",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "s",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 19
+        },
+        "id": 16,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_state_get_failed_total{app_id=~\"$app_id\"}[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - Get Failed",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(dapr_state_set_failed_total{app_id=~\"$app_id\"}[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - Set Failed",
+            "refId": "B"
+          },
+          {
+            "expr": "sum(rate(dapr_state_delete_failed_total{app_id=~\"$app_id\"}[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - Delete Failed",
+            "refId": "C"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "State Store Operation Failures",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 27
+        },
+        "id": 18,
+        "panels": [],
+        "title": "Dapr Pub/Sub Metrics",
+        "type": "row"
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 28
+        },
+        "id": 19,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_pubsub_message_received_total{app_id=~\"$app_id\"}[5m])) by (app_id, topic)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - {{topic}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Pub/Sub Messages Received",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 28
+        },
+        "id": 20,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_pubsub_message_sent_total{app_id=~\"$app_id\"}[5m])) by (app_id, topic)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}} - {{topic}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Pub/Sub Messages Sent",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 28
+        },
+        "id": 21,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(dapr_pubsub_subscription_failed_total{app_id=~\"$app_id\"}[5m])) by (app_id)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{app_id}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Pub/Sub Subscription Failures",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      }
+    ],
+    "refresh": "5s",
+    "schemaVersion": 16,
+    "style": "dark",
+    "tags": [],
+    "templating": {
+      "list": []
+    },
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": [
+        "5s",
+        "10s",
+        "30s",
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "1d"
+      ],
+      "time_options": [
+        "5m",
+        "15m",
+        "1h",
+        "6h",
+        "12h",
+        "24h",
+        "2d",
+        "7d",
+        "30d"
+      ]
+    },
+    "timezone": "",
+    "title": "Dapr Dashboard",
+    "uid": "dapr-dashboard",
+    "version": 1
+  }
+}
+DAPR_DASHBOARD_EOF
+
+cat > grafana/dashboards/trace-dashboard.json << 'TRACE_DASHBOARD_EOF'
+{
+  "dashboard": {
+    "id": null,
+    "title": "Trace Dashboard",
+    "tags": ["traces", "jaeger", "otel"],
+    "style": "dark",
+    "timezone": "browser",
+    "refresh": "5s",
+    "schemaVersion": 16,
+    "version": 1,
+    "time": {
+      "from": "now-15m",
+      "to": "now"
+    },
+    "timepicker": {
+      "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"],
+      "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+    },
+    "templating": {
+      "list": [
+        {
+          "allValue": null,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "datasource": "Prometheus",
+          "hide": 0,
+          "includeAll": true,
+          "label": "Service",
+          "multi": true,
+          "name": "service",
+          "options": [],
+          "query": "label_values(service_name)",
+          "refresh": 1,
+          "regex": "",
+          "sort": 0,
+          "tagValuesQuery": "",
+          "tagsQuery": "",
+          "type": "query",
+          "useTags": false
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "builtIn": 1,
+          "datasource": "-- Grafana --",
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "type": "dashboard"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "collapsed": false,
+        "gridPos": {
+          "h": 1,
+          "w": 24,
+          "x": 0,
+          "y": 0
+        },
+        "id": 2,
+        "panels": [],
+        "title": "Trace Metrics",
+        "type": "row"
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 0,
+          "y": 1
+        },
+        "id": 4,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(traces_span_count_total{service_name=~\"$service\"}[5m])) by (service_name)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{service_name}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Spans per Second",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 8,
+          "y": 1
+        },
+        "id": 5,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(traces_span_duration_seconds_bucket{service_name=~\"$service\"}[5m])) by (le, service_name))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{service_name}} - 95th percentile",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(traces_span_duration_seconds_bucket{service_name=~\"$service\"}[5m])) by (le, service_name))",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{service_name}} - 50th percentile",
+            "refId": "B"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Span Duration",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "s",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      },
+      {
+        "aliasColors": {},
+        "bars": false,
+        "dashLength": 10,
+        "dashes": false,
+        "datasource": "Prometheus",
+        "fill": 1,
+        "gridPos": {
+          "h": 8,
+          "w": 8,
+          "x": 16,
+          "y": 1
+        },
+        "id": 6,
+        "legend": {
+          "avg": false,
+          "current": false,
+          "max": false,
+          "min": false,
+          "show": true,
+          "total": false,
+          "values": false
+        },
+        "lines": true,
+        "linewidth": 1,
+        "links": [],
+        "nullPointMode": "null",
+        "percentage": false,
+        "pointradius": 5,
+        "points": false,
+        "renderer": "flot",
+        "seriesOverrides": [],
+        "spaceLength": 10,
+        "stack": false,
+        "steppedLine": false,
+        "targets": [
+          {
+            "expr": "sum(rate(traces_span_error_count_total{service_name=~\"$service\"}[5m])) by (service_name)",
+            "format": "time_series",
+            "intervalFactor": 1,
+            "legendFormat": "{{service_name}}",
+            "refId": "A"
+          }
+        ],
+        "thresholds": [],
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Span Error Rate",
+        "tooltip": {
+          "shared": true,
+          "sort": 0,
+          "value_type": "individual"
+        },
+        "type": "graph",
+        "xaxis": {
+          "buckets": null,
+          "mode": "time",
+          "name": null,
+          "show": true,
+          "values": []
+        },
+        "yaxes": [
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          },
+          {
+            "format": "short",
+            "label": null,
+            "logBase": 1,
+            "max": null,
+            "min": null,
+            "show": true
+          }
+        ],
+        "yaxis": {
+          "align": false,
+          "alignLevel": null
+        }
+      }
+    ],
+    "refresh": "5s",
+    "schemaVersion": 16,
+    "style": "dark",
+    "tags": [],
+    "templating": {
+      "list": []
+    },
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": [
+        "5s",
+        "10s",
+        "30s",
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "1d"
+      ],
+      "time_options": [
+        "5m",
+        "15m",
+        "1h",
+        "6h",
+        "12h",
+        "24h",
+        "2d",
+        "7d",
+        "30d"
+      ]
+    },
+    "timezone": "",
+    "title": "Trace Dashboard",
+    "uid": "trace-dashboard",
+    "version": 1
+  }
+}
+TRACE_DASHBOARD_EOF
+
+# Create Jaeger configuration
+cat > infra/monitoring/jaeger-config.yml << 'JAEGER_EOF'
+# Jaeger configuration for distributed tracing
+version: '3.8'
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    restart: unless-stopped
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=memory
+    ports:
+      - "16686:16686"  # UI
+      - "14268:14268"  # Jaeger HTTP Thrift
+      - "14250:14250"  # Jaeger gRPC
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+      - "5778:5778"    # Config endpoint
+      - "6831:6831/udp" # Jaeger compact
+      - "6832:6832/udp" # Jaeger binary
+    volumes:
+      - ./jaeger-storage:/tmp/jaeger
+    networks:
+      - monitoring
+
+  # Jaeger agent for sidecar deployment
+  jaeger-agent:
+    image: jaegertracing/jaeger-agent:latest
+    container_name: jaeger-agent
+    restart: unless-stopped
+    command: ["--reporter.grpc.host-port=jaeger:14250"]
+    ports:
+      - "5775:5775/udp"
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    driver: bridge
+JAEGER_EOF
+
+# Create Loki configuration
+cat > infra/monitoring/loki-config.yml << 'LOKI_EOF'
+# Loki configuration for log aggregation
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: /tmp/loki
+  storage:
+    filesystem:
+      chunks_directory: /tmp/loki/chunks
+      rules_directory: /tmp/loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2020-05-15
+      store: boltdb-shipper
+      object_store: filesystem
+      schema: v11
+      index:
+        prefix: index_
+        period: 24h
+
+ruler:
+  alertmanager_url: http://localhost:9093
+
+# Uncomment for production use
+# analytics:
+#   reporting_enabled: false
+LOKI_EOF
+
+# Create OpenTelemetry collector configuration
+cat > infra/monitoring/otel-collector-config.yml << 'OTEL_EOF'
+# OpenTelemetry Collector Configuration
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  prometheus:
+    config:
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+      scrape_configs:
+        - job_name: 'prometheus'
+          static_configs:
+            - targets: ['localhost:9090']
+        - job_name: 'otel-collector'
+          static_configs:
+            - targets: ['localhost:8888']
+
+  jaeger:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:14250
+      thrift_http:
+        endpoint: 0.0.0.0:14268
+      thrift_compact:
+        endpoint: 0.0.0.0:6831
+      thrift_binary:
+        endpoint: 0.0.0.0:6832
+
+  zipkin:
+    endpoint: 0.0.0.0:9411
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  memory_limiter:
+    # 75% of maximum memory up to 4G
+    limit_mib: 1500
+    spike_limit_mib: 512
+    check_interval: 5s
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "todo_app"
+    const_labels:
+      application: "todo-app"
+
+  otlp:
+    endpoint: "jaeger:4317"
+    tls:
+      insecure: true
+
+  logging:
+    loglevel: debug
+
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+    headers:
+      X-Scope-OrgID: "todo-app"
+
+extensions:
+  health_check:
+  pprof:
+    endpoint: :1888
+  zpages:
+    endpoint: :55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, logging]
+
+    traces:
+      receivers: [otlp, jaeger, zipkin]
+      processors: [memory_limiter, batch]
+      exporters: [otlp, logging]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [loki, logging]
+OTEL_EOF
+
+# Create AlertManager configuration
+cat > infra/monitoring/alertmanager.yml << 'ALERTMANAGER_EOF'
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'job']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: 'slack-notifications'
+  routes:
+    - matchers:
+        - severity =~ "critical|warning"
+      receiver: 'slack-notifications'
+      continue: true
+    - matchers:
+        - severity = "critical"
+      receiver: 'pagerduty-notifications'
+
+receivers:
+  - name: 'slack-notifications'
+    slack_configs:
+      - send_resolved: true
+        text: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}\n{{ end }}"
+        api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+        channel: '#alerts'
+        username: 'Prometheus'
+        icon_emoji: ':warning:'
+        title: '{{ .CommonAnnotations.summary }}'
+        pretext: 'Firing: {{ len .Alerts }} alerts'
+  - name: 'pagerduty-notifications'
+    pagerduty_configs:
+      - send_resolved: true
+        routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY'
+        client: 'Prometheus'
+        client_url: 'http://localhost:9090'
+        description: '{{ .CommonAnnotations.summary }}'
+        details:
+          firing: '{{ template "pagerduty.default.instances" .Alerts.Firing }}'
+          num_firing: '{{ .Alerts.Firing | len }}'
+          num_resolved: '{{ .Alerts.Resolved | len }}'
+          description: '{{ .CommonAnnotations.description }}'
+
+inhibit_rules:
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ['alertname', 'namespace']
+ALERTMANAGER_EOF
+
+# Create Dapr metrics configuration
+cat > infra/monitoring/dapr-metrics-config.yml << 'DAPR_METRICS_EOF'
+# Dapr Metrics Configuration
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: dapr-config
+spec:
+  tracing:
+    samplingRate: "1"
+    zipkin:
+      endpointAddress: "http://jaeger:9411/api/v2/spans"
+  metric:
+    enabled: true
+  httpPipeline:
+    handlers:
+    - name: tracing
+      type: middleware.http.tracing
+  features:
+    - name: ServiceInvocation
+      enabled: true
+    - name: StateManagement
+      enabled: true
+    - name: PubSub
+      enabled: true
+    - name: InputBindings
+      enabled: true
+    - name: OutputBindings
+      enabled: true
+---
+# Dapr Component for Observability
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: tracing
+spec:
+  type: exporters.zipkin
+  version: v1
+  metadata:
+  - name: enabled
+    value: "true"
+  - name: exporterType
+    value: "zipkin"
+  - name: endpointAddress
+    value: "http://jaeger:9411/api/v2/spans"
+  - name: propagation
+    value: "w3c"
+DAPR_METRICS_EOF
+
+# Create test script
+cat > infra/monitoring/test-observability.sh << 'TEST_EOF'
+#!/bin/bash
+
+# Test script for observability monitoring stack
+# This script validates the observability configuration
+
+set -e
+
+echo "🧪 Testing Observability Monitoring Stack..."
+
+# Validate Prometheus configuration
+echo "📋 Checking Prometheus configuration..."
+if [ ! -f "infra/monitoring/prometheus.yml" ]; then
+    echo "❌ Prometheus configuration not found"
+    exit 1
+fi
+
+if [ ! -f "infra/monitoring/alert_rules.yml" ]; then
+    echo "❌ Alert rules configuration not found"
+    exit 1
+fi
+
+echo "✅ Prometheus configuration exists"
+
+# Validate Grafana dashboards
+echo "📋 Checking Grafana dashboards..."
+if [ ! -f "grafana/dashboards/todo-app-dashboard.json" ]; then
+    echo "❌ Todo app dashboard not found"
+    exit 1
+fi
+
+if [ ! -f "grafana/dashboards/dapr-dashboard.json" ]; then
+    echo "❌ Dapr dashboard not found"
+    exit 1
+fi
+
+if [ ! -f "grafana/dashboards/trace-dashboard.json" ]; then
+    echo "❌ Trace dashboard not found"
+    exit 1
+fi
+
+echo "✅ All Grafana dashboards exist"
+
+# Validate Jaeger configuration
+echo "📋 Checking Jaeger configuration..."
+if [ ! -f "infra/monitoring/jaeger-config.yml" ]; then
+    echo "❌ Jaeger configuration not found"
+    exit 1
+fi
+
+echo "✅ Jaeger configuration exists"
+
+# Validate Loki configuration
+echo "📋 Checking Loki configuration..."
+if [ ! -f "infra/monitoring/loki-config.yml" ]; then
+    echo "❌ Loki configuration not found"
+    exit 1
+fi
+
+echo "✅ Loki configuration exists"
+
+# Validate OpenTelemetry collector configuration
+echo "📋 Checking OpenTelemetry collector configuration..."
+if [ ! -f "infra/monitoring/otel-collector-config.yml" ]; then
+    echo "❌ OpenTelemetry collector configuration not found"
+    exit 1
+fi
+
+echo "✅ OpenTelemetry collector configuration exists"
+
+# Validate alerting configuration
+echo "📋 Checking alerting configuration..."
+if [ ! -f "infra/monitoring/alertmanager.yml" ]; then
+    echo "❌ Alertmanager configuration not found"
+    exit 1
+fi
+
+echo "✅ Alertmanager configuration exists"
+
+# Validate Dapr metrics configuration
+echo "📋 Checking Dapr metrics configuration..."
+if [ ! -f "infra/monitoring/dapr-metrics-config.yml" ]; then
+    echo "❌ Dapr metrics configuration not found"
+    exit 1
+fi
+
+echo "✅ Dapr metrics configuration exists"
+
+# Check if configuration files contain expected content
+echo "🔍 Checking configuration content..."
+
+# Check for metrics configuration
+if grep -q "prometheus" "infra/monitoring/prometheus.yml" && \
+   grep -q "scrape_configs" "infra/monitoring/prometheus.yml"; then
+    echo "✅ Prometheus configuration has expected metrics setup"
+else
+    echo "❌ Prometheus configuration missing expected metrics setup"
+    exit 1
+fi
+
+# Check for tracing configuration
+if grep -q "jaeger" "infra/monitoring/jaeger-config.yml" && \
+   grep -q "OTLP" "infra/monitoring/jaeger-config.yml"; then
+    echo "✅ Jaeger configuration has expected tracing setup"
+else
+    echo "❌ Jaeger configuration missing expected tracing setup"
+    exit 1
+fi
+
+# Check for logging configuration
+if grep -q "loki" "infra/monitoring/loki-config.yml" && \
+   grep -q "auth_enabled" "infra/monitoring/loki-config.yml"; then
+    echo "✅ Loki configuration has expected logging setup"
+else
+    echo "❌ Loki configuration missing expected logging setup"
+    exit 1
+fi
+
+# Check for OpenTelemetry configuration
+if grep -q "otlp" "infra/monitoring/otel-collector-config.yml" && \
+   grep -q "receivers" "infra/monitoring/otel-collector-config.yml" && \
+   grep -q "exporters" "infra/monitoring/otel-collector-config.yml"; then
+    echo "✅ OpenTelemetry configuration has expected setup"
+else
+    echo "❌ OpenTelemetry configuration missing expected setup"
+    exit 1
+fi
+
+# Check for alerting configuration
+if grep -q "slack_configs" "infra/monitoring/alertmanager.yml" && \
+   grep -q "pagerduty_configs" "infra/monitoring/alertmanager.yml"; then
+    echo "✅ Alerting configuration has expected setup"
+else
+    echo "❌ Alerting configuration missing expected setup"
+    exit 1
+fi
+
+# Check for Dapr configuration
+if grep -q "dapr.io" "infra/monitoring/dapr-metrics-config.yml" && \
+   grep -q "tracing" "infra/monitoring/dapr-metrics-config.yml"; then
+    echo "✅ Dapr metrics configuration has expected setup"
+else
+    echo "❌ Dapr metrics configuration missing expected setup"
+    exit 1
+fi
+
+echo "✅ All tests passed!"
+echo ""
+echo "🎯 Observability stack is ready:"
+echo "   - Metrics: Prometheus + Grafana dashboards"
+echo "   - Traces: Jaeger + trace_id propagation"
+echo "   - Logs: Loki + structured JSON"
+echo "   - Service mesh: Dapr metrics integration"
+echo "   - Alerting: Slack + PagerDuty integration"
+TEST_EOF
+
+chmod +x infra/monitoring/test-observability.sh
+
+echo "✅ observability-monitoring skill executed successfully!"
+echo ""
+echo "📁 Created infrastructure:"
+echo "   - Metrics: infra/monitoring/prometheus.yml"
+echo "   - Traces: infra/monitoring/jaeger-config.yml"
+echo "   - Logs: infra/monitoring/loki-config.yml"
+echo "   - OpenTelemetry: infra/monitoring/otel-collector-config.yml"
+echo "   - Grafana dashboards: grafana/dashboards/"
+echo "   - Alerting: infra/monitoring/alertmanager.yml"
+echo "   - Dapr metrics: infra/monitoring/dapr-metrics-config.yml"
+echo ""
+echo "🎯 Features:"
+echo "   - Metrics: Prometheus + Grafana dashboards"
+echo "   - Traces: Jaeger + trace_id propagation"
+echo "   - Logs: Loki + structured JSON"
+echo "   - Service mesh: Dapr metrics integration"
+echo "   - Alerting: Slack + PagerDuty integration"

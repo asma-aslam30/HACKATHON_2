@@ -1,0 +1,558 @@
+#!/bin/bash
+
+# k8s-helm-config Skill
+# Sets up Minikube + Helm charts for Phase IV deployment
+# Creates infrastructure for todo application with frontend/backend/mcp services
+
+set -e
+
+echo "🚀 Executing k8s-helm-config skill..."
+
+# Create Helm chart structure
+if [ ! -d "infra/helm/todo-app" ]; then
+    echo "📁 Creating Helm chart structure..."
+    mkdir -p infra/helm/todo-app/charts/todo-app/templates
+    mkdir -p infra/helm/todo-app/charts/frontend/templates
+    mkdir -p infra/helm/todo-app/charts/backend/templates
+    mkdir -p infra/helm/todo-app/charts/mcp/templates
+fi
+
+# Create Kubernetes manifests
+echo "📦 Creating Kubernetes manifests..."
+
+# Create main chart files if they don't exist
+if [ ! -f "infra/helm/todo-app/Chart.yaml" ]; then
+    cat > infra/helm/todo-app/Chart.yaml << 'CHART_EOF'
+apiVersion: v2
+name: todo-app
+description: A Helm chart for the todo application
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+CHART_EOF
+fi
+
+if [ ! -f "infra/helm/todo-app/values.yaml" ]; then
+    cat > infra/helm/todo-app/values.yaml << 'VALUES_EOF'
+# Default values for todo-app
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+global:
+  image:
+    repository: todo-app
+    tag: latest
+    pullPolicy: IfNotPresent
+
+frontend:
+  replicaCount: 1
+  image:
+    repository: todo-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: chart-example.local
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+    tls: []
+
+backend:
+  replicaCount: 1
+  image:
+    repository: todo-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  database:
+    host: postgres
+    port: 5432
+    name: todo_db
+    user: todo_user
+    password: todo_password
+
+mcp:
+  replicaCount: 1
+  image:
+    repository: todo-mcp
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8081
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+VALUES_EOF
+fi
+
+# Create templates if they don't exist
+if [ ! -f "infra/helm/todo-app/templates/frontend-deployment.yaml" ]; then
+    cat > infra/helm/todo-app/templates/frontend-deployment.yaml << 'FRONTEND_DEPLOYMENT_EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todo-app.fullname" . }}-frontend
+  labels:
+    {{- include "todo-app.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.frontend.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "todo-app.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "todo-app.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "todo-app.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}-frontend
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.frontend.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+FRONTEND_DEPLOYMENT_EOF
+fi
+
+if [ ! -f "infra/helm/todo-app/templates/_helpers.tpl" ]; then
+    cat > infra/helm/todo-app/templates/_helpers.tpl << 'HELPERS_EOF'
+{{/*
+Expand the name of the chart.
+*/}}
+{{- define "todo-app.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Create a default fully qualified app name.
+We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
+If release name contains chart name it will be used as a full name.
+*/}}
+{{- define "todo-app.fullname" -}}
+{{- if .Values.fullnameOverride }}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $name := default .Chart.Name .Values.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Create chart name and version as used by the chart label.
+*/}}
+{{- define "todo-app.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Common labels
+*/}}
+{{- define "todo-app.labels" -}}
+helm.sh/chart: {{ include "todo-app.chart" . }}
+{{ include "todo-app.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Selector labels
+*/}}
+{{- define "todo-app.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "todo-app.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Create the name of the service account to use
+*/}}
+{{- define "todo-app.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "todo-app.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+HELPERS_EOF
+fi
+
+# Create Minikube setup script if it doesn't exist
+if [ ! -f "infra/k8s/minikube-setup.sh" ]; then
+    mkdir -p infra/k8s
+    cat > infra/k8s/minikube-setup.sh << 'MINIKUBE_EOF'
+#!/bin/bash
+
+# Minikube setup script for Todo Application
+# This script sets up a local Kubernetes cluster with Minikube and deploys the Todo application
+
+set -e  # Exit immediately if a command exits with a non-zero status
+
+echo "🚀 Setting up Minikube for Todo Application..."
+
+# Check if minikube is installed
+if ! command -v minikube &> /dev/null; then
+    echo "❌ Minikube is not installed. Please install Minikube first."
+    echo "Installation instructions: https://minikube.sigs.k8s.io/docs/start/"
+    exit 1
+fi
+
+# Check if kubectl is installed
+if ! command -v kubectl &> /dev/null; then
+    echo "❌ kubectl is not installed. Please install kubectl first."
+    echo "Installation instructions: https://kubernetes.io/docs/tasks/tools/"
+    exit 1
+fi
+
+# Check if helm is installed
+if ! command -v helm &> /dev/null; then
+    echo "❌ Helm is not installed. Please install Helm first."
+    echo "Installation instructions: https://helm.sh/docs/intro/install/"
+    exit 1
+fi
+
+# Start Minikube cluster
+echo "🔄 Starting Minikube cluster..."
+minikube start --cpus=2 --memory=4g --disk-size=20g
+
+# Enable ingress addon
+echo "🔌 Enabling ingress addon..."
+minikube addons enable ingress
+
+# Wait for ingress controller to be ready
+echo "⏳ Waiting for ingress controller to be ready..."
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=90s
+
+# Build Docker images (if using minikube's Docker daemon)
+echo "🐳 Using Minikube's Docker environment..."
+eval $(minikube docker-env)
+
+# Build application images (example - adjust according to your actual Dockerfiles)
+# docker build -t todo-frontend:latest ./frontend
+# docker build -t todo-backend:latest ./backend
+# docker build -t todo-mcp:latest ./mcp
+
+# Deploy the Todo application using Helm
+echo "📦 Deploying Todo application with Helm..."
+cd infra/helm/todo-app
+helm dependency update
+helm install todo-app . --create-namespace --namespace todo-app --wait
+
+# Wait for all pods to be ready
+echo "⏳ Waiting for all pods to be ready..."
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=todo-app --timeout=300s --namespace todo-app
+
+# Get the Minikube IP
+MINIKUBE_IP=$(minikube ip)
+echo "✅ Minikube cluster is ready!"
+echo "🌐 Todo application is accessible at: http://$MINIKUBE_IP"
+
+# Show deployment status
+echo "📋 Deployment status:"
+kubectl get pods,services,ingress -n todo-app
+
+echo "💡 To access the application, you may need to add an entry to your /etc/hosts file:"
+echo "sudo echo '$MINIKUBE_IP todo-app.local' >> /etc/hosts"
+
+echo "🔧 To access the Minikube dashboard:"
+echo "minikube dashboard"
+
+echo "🧹 To stop Minikube: minikube stop"
+echo "🗑️  To delete the cluster: minikube delete"
+MINIKUBE_EOF
+
+    chmod +x infra/k8s/minikube-setup.sh
+fi
+
+# Create kubectl-ai integration if it doesn't exist
+if [ ! -f "infra/k8s/kubectl-ai-integration.sh" ]; then
+    cat > infra/k8s/kubectl-ai-integration.sh << 'KUBECTL_AI_EOF'
+# kubectl-ai Integration for Todo Application
+
+# This configuration provides AI-powered kubectl commands for the Todo application
+# It includes common operations, troubleshooting commands, and deployment utilities
+
+# Configuration for kubectl-ai plugin
+export KUBECTL_AI_CONFIG_FILE=$(cat << EOF
+{
+  "commands": {
+    "todo-app-status": {
+      "description": "Get status of all todo application components",
+      "command": "kubectl get pods,svc,ingress,deployments -n todo-app"
+    },
+    "todo-app-logs": {
+      "description": "Get logs from all todo application pods",
+      "command": "kubectl get pods -n todo-app -o name | xargs -I {} kubectl logs {} -n todo-app"
+    },
+    "todo-app-troubleshoot": {
+      "description": "Comprehensive troubleshooting for todo application",
+      "command": "kubectl get events -n todo-app && kubectl describe pods -n todo-app && kubectl logs -l app.kubernetes.io/name=todo-app -n todo-app --tail=50"
+    },
+    "todo-app-scale": {
+      "description": "Scale frontend/backend deployments",
+      "command": "kubectl scale deployment {deployment_name} --replicas={replica_count} -n todo-app"
+    },
+    "todo-app-port-forward": {
+      "description": "Port forward to todo application services",
+      "command": "kubectl port-forward -n todo-app service/{service_name} {local_port}:{remote_port}"
+    },
+    "todo-app-update-image": {
+      "description": "Update image for a deployment",
+      "command": "kubectl set image deployment/{deployment_name} {container_name}={new_image} -n todo-app"
+    },
+    "todo-app-helm-upgrade": {
+      "description": "Upgrade todo application using Helm",
+      "command": "helm upgrade todo-app infra/helm/todo-app -n todo-app --reuse-values"
+    },
+    "todo-app-helm-rollback": {
+      "description": "Rollback todo application to previous version",
+      "command": "helm rollback todo-app -n todo-app"
+    }
+  },
+  "aliases": {
+    "tas": "todo-app-status",
+    "tal": "todo-app-logs",
+    "tat": "todo-app-troubleshoot",
+    "tash": "todo-app-shell",
+    "tah": "todo-app-helm-upgrade"
+  },
+  "contexts": {
+    "todo-app": {
+      "namespace": "todo-app",
+      "selectors": [
+        "app.kubernetes.io/name=todo-app",
+        "app=todo-app"
+      ]
+    }
+  }
+}
+EOF
+)
+
+# Function to install kubectl-ai plugin if not present
+install_kubectl_ai() {
+  if ! command -v kubectl-ai &> /dev/null; then
+    echo "Installing kubectl-ai plugin..."
+    # This assumes kubectl-ai is available as a krew plugin or can be installed
+    # Adjust based on actual kubectl-ai installation method
+    kubectl krew install ai || {
+      echo "Failed to install kubectl-ai via krew"
+      echo "Please install kubectl-ai manually from: https://github.com/itaysk/kubectl-ai"
+      return 1
+    }
+  fi
+}
+
+# Function to apply kubectl-ai configurations
+setup_kubectl_ai_config() {
+  local config_dir="$HOME/.kubectl-ai"
+  mkdir -p "$config_dir"
+
+  # Create custom commands file
+  cat > "$config_dir/custom-commands.yaml" << 'CUSTOM_COMMANDS_EOF'
+commands:
+  - name: "todo-app-status"
+    description: "Get status of all todo application components"
+    template: |
+      kubectl get pods,svc,ingress,deployments -n todo-app
+
+  - name: "todo-app-logs"
+    description: "Get logs from all todo application pods"
+    template: |
+      kubectl get pods -n todo-app -o name | xargs -I {} kubectl logs {} -n todo-app
+
+  - name: "todo-app-troubleshoot"
+    description: "Comprehensive troubleshooting for todo application"
+    template: |
+      kubectl get events -n todo-app && kubectl describe pods -n todo-app && kubectl logs -l app.kubernetes.io/name=todo-app -n todo-app --tail=50
+
+  - name: "todo-app-scale"
+    description: "Scale frontend/backend deployments"
+    template: |
+      kubectl scale deployment {{.DeploymentName}} --replicas={{.ReplicaCount}} -n todo-app
+    parameters:
+      - name: "DeploymentName"
+        prompt: "Enter deployment name:"
+      - name: "ReplicaCount"
+        prompt: "Enter replica count:"
+
+  - name: "todo-app-port-forward"
+    description: "Port forward to todo application services"
+    template: |
+      kubectl port-forward -n todo-app service/{{.ServiceName}} {{.LocalPort}}:{{.RemotePort}}
+    parameters:
+      - name: "ServiceName"
+        prompt: "Enter service name:"
+      - name: "LocalPort"
+        prompt: "Enter local port:"
+      - name: "RemotePort"
+        prompt: "Enter remote port:"
+
+  - name: "todo-app-update-image"
+    description: "Update image for a deployment"
+    template: |
+      kubectl set image deployment {{.DeploymentName}} {{.ContainerName}}={{.NewImage}} -n todo-app
+    parameters:
+      - name: "DeploymentName"
+        prompt: "Enter deployment name:"
+      - name: "ContainerName"
+        prompt: "Enter container name:"
+      - name: "NewImage"
+        prompt: "Enter new image (e.g., nginx:latest):"
+
+  - name: "todo-app-helm-upgrade"
+    description: "Upgrade todo application using Helm"
+    template: |
+      helm upgrade todo-app infra/helm/todo-app -n todo-app --reuse-values
+
+  - name: "todo-app-helm-rollback"
+    description: "Rollback todo application to previous version"
+    template: |
+      helm rollback todo-app -n todo-app
+CUSTOM_COMMANDS_EOF
+
+  echo "kubectl-ai custom commands configured in $config_dir/custom-commands.yaml"
+}
+
+# Function to create kubectl aliases for todo app
+setup_kubectl_aliases() {
+  cat >> "$HOME/.bashrc" << 'ALIASES_EOF'
+
+# Todo App kubectl aliases
+alias kta='kubectl -n todo-app'
+alias ktas='kubectl get pods,svc,ingress,deployments -n todo-app'
+alias ktal='kubectl get pods -n todo-app -o name | xargs -I {} kubectl logs {} -n todo-app'
+alias ktat='kubectl get events -n todo-app && kubectl describe pods -n todo-app && kubectl logs -l app.kubernetes.io/name=todo-app -n todo-app --tail=50'
+alias ktad='kubectl describe -n todo-app'
+alias ktag='kubectl get -n todo-app'
+alias ktaln='kubectl logs -n todo-app -l app.kubernetes.io/name=todo-app'
+ALIASES_EOF
+
+  echo "kubectl aliases added to ~/.bashrc"
+  echo "Run 'source ~/.bashrc' or restart your terminal to use the aliases"
+}
+
+# Main execution
+main() {
+  echo "Setting up kubectl-ai integration for Todo application..."
+
+  install_kubectl_ai
+  setup_kubectl_ai_config
+  setup_kubectl_aliases
+
+  echo "✅ kubectl-ai integration for Todo application is set up!"
+  echo "💡 Run 'kubectl ai --help' to see available AI-powered commands"
+  echo "💡 Custom commands available: todo-app-status, todo-app-logs, todo-app-troubleshoot, etc."
+}
+
+# Uncomment the following line to run the setup automatically
+# main
+KUBECTL_AI_EOF
+fi
+
+echo "✅ k8s-helm-config skill executed successfully!"
+echo ""
+echo "📁 Created infrastructure:"
+echo "   - Helm chart: infra/helm/todo-app/"
+echo "   - Minikube setup: infra/k8s/minikube-setup.sh"
+echo "   - kubectl-ai integration: infra/k8s/kubectl-ai-integration.sh"
+echo ""
+echo "🚀 To deploy: ./infra/k8s/minikube-setup.sh"

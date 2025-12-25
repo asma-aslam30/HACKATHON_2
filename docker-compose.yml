@@ -1,0 +1,130 @@
+# Docker Compose for Evolution of Todo
+# Local Development Configuration
+# Version: 1.0.0
+
+version: '3.9'
+
+services:
+  # ============================================
+  # Database (PostgreSQL)
+  # ============================================
+  db:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.db
+    container_name: evolution-todo-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-evolution_todo_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-evolution_todo}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - evolution-todo-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-evolution_todo_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================
+  # Backend (FastAPI)
+  # ============================================
+  backend:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.backend
+    container_name: evolution-todo-backend
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-evolution_todo_user}:${POSTGRES_PASSWORD:-dev_password}@db:5432/${POSTGRES_DB:-evolution_todo}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRATION_MINUTES: 60
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - evolution-todo-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    # For development: mount source code
+    volumes:
+      - ./backend:/app:delegated
+
+  # ============================================
+  # Frontend (Next.js)
+  # ============================================
+  frontend:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.frontend
+    container_name: evolution-todo-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_ENV: ${NEXT_PUBLIC_ENV:-development}
+      NODE_ENV: ${NODE_ENV:-production}
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - evolution-todo-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # ============================================
+  # Redis (Optional - for caching)
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: evolution-todo-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - evolution-todo-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  evolution-todo-network:
+    driver: bridge
+    name: evolution-todo-network
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  postgres-data:
+    driver: local
+    name: evolution-todo-postgres-data
+  redis-data:
+    driver: local
+    name: evolution-todo-redis-data

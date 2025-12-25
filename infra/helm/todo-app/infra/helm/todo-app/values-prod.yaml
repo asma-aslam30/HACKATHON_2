@@ -1,0 +1,96 @@
+# Production environment values
+# These values are used for the production environment deployment
+
+global:
+  image:
+    repository: ghcr.io/your-org/todo-app
+    tag: prod-latest
+    pullPolicy: Always
+
+frontend:
+  replicaCount: 3
+  image:
+    tag: prod-latest
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      kubernetes.io/ingress.class: nginx
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/rate-limit: "100"
+      nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    hosts:
+      - host: yourdomain.com
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+    tls:
+      - secretName: prod-tls-cert
+        hosts:
+          - yourdomain.com
+
+backend:
+  replicaCount: 3
+  image:
+    tag: prod-latest
+  service:
+    type: ClusterIP
+    port: 8080
+  database:
+    host: postgres-prod
+    port: 5432
+    name: todo_prod
+    user: todo_user
+    password: "prod_password"
+
+mcp:
+  replicaCount: 2
+  image:
+    tag: prod-latest
+  service:
+    type: ClusterIP
+    port: 8081
+
+# Dapr-specific configurations for production
+dapr:
+  postgres:
+    host: postgres-prod
+    port: 5432
+    user: todo_user
+    password: "prod_password"
+    dbname: todo_prod
+  redis:
+    host: redis-prod
+    port: 6379
+    password: "prod_redis_password"
+  kafka:
+    brokers: "kafka-prod:9092"
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+
+# Security configurations for production
+podSecurityContext:
+  fsGroup: 2000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000

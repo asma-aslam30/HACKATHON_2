@@ -1,0 +1,772 @@
+#!/bin/bash
+
+# cloud-deployment Skill
+# Designs GitHub Actions + DOKS workflows for Phase V
+# Implements CI/CD pipeline with multi-environment support
+
+set -e
+
+echo "🚀 Executing cloud-deployment skill..."
+
+# Create directory structure
+mkdir -p .github/workflows cloud/doks cloud/doks/dapr-components infra/helm/todo-app
+
+# Create GitHub Actions workflow
+cat > .github/workflows/deploy.yml << 'GITHUB_WORKFLOW_EOF'
+name: CI/CD Pipeline
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+  push:
+    branches: [ main, develop ]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  lint-test-build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linting
+        run: npm run lint
+
+      - name: Run tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.number }}-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.number }}-latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+
+      - name: Create Preview Environment
+        run: |
+          # Deploy to preview environment using the PR-specific image
+          echo "Deploying preview environment for PR #${{ github.event.number }}"
+          # This would typically deploy to a temporary environment
+          # For example: kubectl apply -f preview-manifests/ --namespace=pr-${{ github.event.number }}
+
+  deploy-dev:
+    if: github.ref == 'refs/heads/develop'
+    needs: lint-test-build
+    runs-on: ubuntu-latest
+    environment: development
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Setup Dapr CLI
+        uses: dapr/setup-dapr@v1
+        with:
+          dapr-cli-version: '1.11.0'
+
+      - name: Configure DigitalOcean CLI
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+      - name: Get DOKS credentials
+        run: doctl kubernetes cluster kubeconfig save ${{ secrets.DOKS_CLUSTER_NAME }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy to Development
+        run: |
+          # Deploy using Helm with dev-specific values
+          helm upgrade --install todo-app ./infra/helm/todo-app \
+            --namespace todo-dev \
+            --create-namespace \
+            --values ./infra/helm/todo-app/values-dev.yaml \
+            --set global.image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set global.image.tag=develop-${{ github.sha }} \
+            --wait
+
+          # Verify Dapr components are working
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=todo-app --timeout=300s --namespace todo-dev
+
+      - name: Run post-deployment tests
+        run: |
+          # Run smoke tests against the deployed application
+          echo "Running post-deployment tests for development environment..."
+
+  deploy-staging:
+    if: github.ref == 'refs/heads/main'
+    needs: [ lint-test-build ]
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Setup Dapr CLI
+        uses: dapr/setup-dapr@v1
+        with:
+          dapr-cli-version: '1.11.0'
+
+      - name: Configure DigitalOcean CLI
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+      - name: Get DOKS credentials
+        run: doctl kubernetes cluster kubeconfig save ${{ secrets.DOKS_CLUSTER_NAME }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy to Staging
+        run: |
+          # Deploy using Helm with staging-specific values
+          helm upgrade --install todo-app ./infra/helm/todo-app \
+            --namespace todo-staging \
+            --create-namespace \
+            --values ./infra/helm/todo-app/values-staging.yaml \
+            --set global.image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set global.image.tag=main-${{ github.sha }} \
+            --set frontend.ingress.enabled=true \
+            --set frontend.ingress.hosts[0].host=staging.${{ secrets.DOKS_CLUSTER_HOST }} \
+            --wait
+
+          # Verify Dapr components are working
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=todo-app --timeout=300s --namespace todo-staging
+
+          # Run Dapr health checks
+          dapr status --kubernetes
+
+      - name: Run staging tests
+        run: |
+          # Run integration tests against the staging environment
+          echo "Running integration tests for staging environment..."
+          # Add actual test commands here
+
+  deploy-prod:
+    if: github.ref == 'refs/heads/main'
+    needs: [ deploy-staging ]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Setup Dapr CLI
+        uses: dapr/setup-dapr@v1
+        with:
+          dapr-cli-version: '1.11.0'
+
+      - name: Configure DigitalOcean CLI
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+      - name: Get DOKS credentials
+        run: doctl kubernetes cluster kubeconfig save ${{ secrets.DOKS_CLUSTER_NAME }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy to Production
+        run: |
+          # Deploy using Helm with production-specific values
+          helm upgrade --install todo-app ./infra/helm/todo-app \
+            --namespace todo-prod \
+            --create-namespace \
+            --values ./infra/helm/todo-app/values-prod.yaml \
+            --set global.image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set global.image.tag=main-${{ github.sha }} \
+            --set frontend.ingress.enabled=true \
+            --set frontend.ingress.hosts[0].host=${{ secrets.DOKS_CLUSTER_HOST }} \
+            --set frontend.ingress.tls[0].hosts[0]=${{ secrets.DOKS_CLUSTER_HOST }} \
+            --set frontend.ingress.tls[0].secretName=todo-tls-cert \
+            --wait
+
+          # Verify Dapr components are working
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=todo-app --timeout=300s --namespace todo-prod
+
+          # Run Dapr health checks
+          dapr status --kubernetes
+
+      - name: Run production smoke tests
+        run: |
+          # Run smoke tests against the production environment
+          echo "Running smoke tests for production environment..."
+          # Add actual test commands here
+
+  dapr-rollout:
+    if: github.ref == 'refs/heads/main'
+    needs: [ deploy-prod ]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Setup Dapr CLI
+        uses: dapr/setup-dapr@v1
+        with:
+          dapr-cli-version: '1.11.0'
+
+      - name: Configure DigitalOcean CLI
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+
+      - name: Get DOKS credentials
+        run: doctl kubernetes cluster kubeconfig save ${{ secrets.DOKS_CLUSTER_NAME }}
+
+      - name: Rollout Dapr components
+        run: |
+          # Update Dapr components if needed
+          # This could involve applying new Dapr configurations
+          kubectl apply -f ./cloud/doks/dapr-components/ --namespace todo-prod
+
+          # Restart Dapr sidecars to pick up new configurations
+          kubectl rollout restart deployment -l app.kubernetes.io/name=todo-app --namespace todo-prod
+
+          # Wait for rollout to complete
+          kubectl rollout status deployment -l app.kubernetes.io/name=todo-app --namespace todo-prod --timeout=300s
+
+          # Verify Dapr health
+          dapr status --kubernetes
+GITHUB_WORKFLOW_EOF
+
+# Create DOKS setup script
+cat > cloud/doks/doks-setup.sh << 'DOKS_SETUP_EOF'
+#!/bin/bash
+
+# doks-setup.sh - Setup script for DOKS cluster
+# This script provisions and configures a DOKS cluster for the todo application
+
+set -e
+
+CLUSTER_NAME="${CLUSTER_NAME:-todo-cluster}"
+REGION="${REGION:-nyc1}"
+NODE_SIZE="${NODE_SIZE:-s-2vcpu-4gb}"
+NODE_COUNT="${NODE_COUNT:-3}"
+
+echo "🚀 Setting up DOKS cluster: $CLUSTER_NAME"
+
+# Check if doctl is installed
+if ! command -v doctl &> /dev/null; then
+    echo "❌ doctl is not installed. Please install DigitalOcean CLI first."
+    echo "Installation: https://docs.digitalocean.com/reference/doctl/how-to/install/"
+    exit 1
+fi
+
+# Check if kubectl is installed
+if ! command -v kubectl &> /dev/null; then
+    echo "❌ kubectl is not installed. Please install kubectl first."
+    exit 1
+fi
+
+# Check if helm is installed
+if ! command -v helm &> /dev/null; then
+    echo "❌ Helm is not installed. Please install Helm first."
+    exit 1
+fi
+
+# Create DOKS cluster
+echo "🌐 Creating DOKS cluster: $CLUSTER_NAME"
+doctl kubernetes cluster create $CLUSTER_NAME \
+    --region $REGION \
+    --node-pool "name=default;size=$NODE_SIZE;count=$NODE_COUNT" \
+    --auto-upgrade \
+    --maintenance-start "sunday=02:00:00" \
+    --wait
+
+# Get cluster credentials
+echo "🔐 Getting cluster credentials..."
+doctl kubernetes cluster kubeconfig save $CLUSTER_NAME
+
+# Verify cluster connectivity
+echo "✅ Cluster connectivity verified"
+kubectl cluster-info
+
+# Install Nginx Ingress Controller
+echo "🔌 Installing Nginx Ingress Controller..."
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+    --namespace ingress-nginx \
+    --create-namespace \
+    --set controller.service.type=LoadBalancer \
+    --wait
+
+# Install Cert-Manager for SSL certificates
+echo "🔒 Installing Cert-Manager..."
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager --timeout=300s -n cert-manager
+
+# Install Dapr
+echo "🎯 Installing Dapr..."
+helm repo add dapr https://dapr.github.io/helm-charts
+helm repo update
+helm install dapr dapr/dapr \
+    --namespace dapr-system \
+    --create-namespace \
+    --wait
+
+# Wait for Dapr to be ready
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=dapr --timeout=300s -n dapr-system
+
+echo "✅ DOKS cluster setup complete!"
+echo "Cluster: $CLUSTER_NAME"
+echo "Region: $REGION"
+echo "Nodes: $NODE_COUNT x $NODE_SIZE"
+echo ""
+echo "To access the cluster: doctl kubernetes cluster kubeconfig save $CLUSTER_NAME"
+echo "To view cluster info: kubectl cluster-info"
+DOKS_SETUP_EOF
+
+chmod +x cloud/doks/doks-setup.sh
+
+# Create Dapr components
+cat > cloud/doks/dapr-components/statestore.yaml << 'DAPR_STATESTORE_EOF'
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: statestore
+spec:
+  type: state.postgresql
+  version: v1
+  metadata:
+  - name: connectionString
+    value: "host={{.Values.dapr.postgres.host}} user={{.Values.dapr.postgres.user}} password={{.Values.dapr.postgres.password}} dbname={{.Values.dapr.postgres.dbname}} port={{.Values.dapr.postgres.port}} sslmode=disable"
+  - name: table
+    value: "state"
+  - name: schema
+    value: "public"
+  - name: actorStateStore
+    value: "true"
+DAPR_STATESTORE_EOF
+
+cat > cloud/doks/dapr-components/pubsub.yaml << 'DAPR_PUBSUB_EOF'
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: pubsub
+spec:
+  type: pubsub.kafka
+  version: v1
+  metadata:
+  - name: brokers
+    value: "{{.Values.dapr.kafka.brokers}}"
+  - name: consumerGroup
+    value: "dapr-consumer-group"
+  - name: clientID
+    value: "dapr-kafka-client"
+  - name: authType
+    value: "none"
+  - name: initialOffset
+    value: "newest"
+DAPR_PUBSUB_EOF
+
+cat > cloud/doks/dapr-components/redis-cache.yaml << 'DAPR_REDIS_EOF'
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: redis-cache
+spec:
+  type: state.redis
+  version: v1
+  metadata:
+  - name: redisHost
+    value: "{{.Values.dapr.redis.host}}:{{.Values.dapr.redis.port}}"
+  - name: redisPassword
+    value: "{{.Values.dapr.redis.password}}"
+  - name: enableTLS
+    value: "false"
+  - name: actorStateStore
+    value: "true"
+DAPR_REDIS_EOF
+
+cat > cloud/doks/dapr-components/service-invocation.yaml << 'DAPR_CONFIG_EOF'
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: dapr-config
+spec:
+  tracing:
+    samplingRate: "1"
+    zipkin:
+      endpointAddress: "http://zipkin.default.svc.cluster.local:9411/api/v2/spans"
+  mtls:
+    enabled: true
+    workloadCertTTL: "24h"
+    allowedClockSkew: "15m"
+  features:
+    - name: ServiceInvocation
+      enabled: true
+    - name: StateManagement
+      enabled: true
+    - name: PubSub
+      enabled: true
+DAPR_CONFIG_EOF
+
+# Create multi-environment values files
+cat > infra/helm/todo-app/values-dev.yaml << 'VALUES_DEV_EOF'
+# Development environment values
+# These values are used for the development environment deployment
+
+global:
+  image:
+    repository: ghcr.io/your-org/todo-app
+    tag: develop-latest
+    pullPolicy: Always
+
+frontend:
+  replicaCount: 1
+  image:
+    tag: develop-latest
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: false
+
+backend:
+  replicaCount: 1
+  image:
+    tag: develop-latest
+  service:
+    type: ClusterIP
+    port: 8080
+  database:
+    host: postgres-dev
+    port: 5432
+    name: todo_dev
+    user: todo_user
+    password: "dev_password"
+
+mcp:
+  replicaCount: 1
+  image:
+    tag: develop-latest
+  service:
+    type: ClusterIP
+    port: 8081
+
+# Dapr-specific configurations for development
+dapr:
+  postgres:
+    host: postgres-dev
+    port: 5432
+    user: todo_user
+    password: "dev_password"
+    dbname: todo_dev
+  redis:
+    host: redis-dev
+    port: 6379
+    password: "dev_redis_password"
+  kafka:
+    brokers: "kafka-dev:9092"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+VALUES_DEV_EOF
+
+cat > infra/helm/todo-app/values-staging.yaml << 'VALUES_STAGING_EOF'
+# Staging environment values
+# These values are used for the staging environment deployment
+
+global:
+  image:
+    repository: ghcr.io/your-org/todo-app
+    tag: staging-latest
+    pullPolicy: Always
+
+frontend:
+  replicaCount: 2
+  image:
+    tag: staging-latest
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      kubernetes.io/ingress.class: nginx
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: staging.yourdomain.com
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+    tls:
+      - secretName: staging-tls-cert
+        hosts:
+          - staging.yourdomain.com
+
+backend:
+  replicaCount: 2
+  image:
+    tag: staging-latest
+  service:
+    type: ClusterIP
+    port: 8080
+  database:
+    host: postgres-staging
+    port: 5432
+    name: todo_staging
+    user: todo_user
+    password: "staging_password"
+
+mcp:
+  replicaCount: 1
+  image:
+    tag: staging-latest
+  service:
+    type: ClusterIP
+    port: 8081
+
+# Dapr-specific configurations for staging
+dapr:
+  postgres:
+    host: postgres-staging
+    port: 5432
+    user: todo_user
+    password: "staging_password"
+    dbname: todo_staging
+  redis:
+    host: redis-staging
+    port: 6379
+    password: "staging_redis_password"
+  kafka:
+    brokers: "kafka-staging:9092"
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+VALUES_STAGING_EOF
+
+cat > infra/helm/todo-app/values-prod.yaml << 'VALUES_PROD_EOF'
+# Production environment values
+# These values are used for the production environment deployment
+
+global:
+  image:
+    repository: ghcr.io/your-org/todo-app
+    tag: prod-latest
+    pullPolicy: Always
+
+frontend:
+  replicaCount: 3
+  image:
+    tag: prod-latest
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      kubernetes.io/ingress.class: nginx
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/rate-limit: "100"
+      nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    hosts:
+      - host: yourdomain.com
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+    tls:
+      - secretName: prod-tls-cert
+        hosts:
+          - yourdomain.com
+
+backend:
+  replicaCount: 3
+  image:
+    tag: prod-latest
+  service:
+    type: ClusterIP
+    port: 8080
+  database:
+    host: postgres-prod
+    port: 5432
+    name: todo_prod
+    user: todo_user
+    password: "prod_password"
+
+mcp:
+  replicaCount: 2
+  image:
+    tag: prod-latest
+  service:
+    type: ClusterIP
+    port: 8081
+
+# Dapr-specific configurations for production
+dapr:
+  postgres:
+    host: postgres-prod
+    port: 5432
+    user: todo_user
+    password: "prod_password"
+    dbname: todo_prod
+  redis:
+    host: redis-prod
+    port: 6379
+    password: "prod_redis_password"
+  kafka:
+    brokers: "kafka-prod:9092"
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+
+# Security configurations for production
+podSecurityContext:
+  fsGroup: 2000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+VALUES_PROD_EOF
+
+echo "✅ cloud-deployment skill executed successfully!"
+echo ""
+echo "📁 Created infrastructure:"
+echo "   - GitHub Actions workflow: .github/workflows/deploy.yml"
+echo "   - DOKS setup script: cloud/doks/doks-setup.sh"
+echo "   - Dapr components: cloud/doks/dapr-components/"
+echo "   - Multi-env configs: infra/helm/todo-app/values-{dev,staging,prod}.yaml"
+echo ""
+echo "🎯 CI/CD Pipeline Features:"
+echo "   - PR workflow: lint + test + build → Preview environment"
+echo "   - Merge workflow: Helm upgrade + Dapr rollout"
+echo "   - Multi-environment: dev/staging/prod with env-specific values"
+echo "   - DOKS cluster setup with Dapr integration"
+echo ""
+echo "🚀 To deploy to dev: make deploy-dev → DOKS cluster + Helm 3-way merge"

@@ -1,0 +1,81 @@
+groups:
+  - name: todo-app-alerts
+    rules:
+      # High error rate alerts
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5..", job="todo-app"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected in todo-app"
+          description: "HTTP error rate is above 0.1 errors per second for more than 2 minutes"
+
+      # High latency alerts
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="todo-app"}[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected in todo-app"
+          description: "95th percentile of HTTP request duration is above 1 second for more than 5 minutes"
+
+      # Dapr specific alerts
+      - alert: DaprSidecarDown
+        expr: up{job="dapr-apps"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dapr sidecar is down"
+          description: "Dapr sidecar for a pod has been down for more than 1 minute"
+
+      # Resource usage alerts
+      - alert: HighCPUUsage
+        expr: 100 - (avg by (pod) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is above 80% for more than 5 minutes"
+
+      - alert: HighMemoryUsage
+        expr: (container_memory_usage_bytes{container!="", pod!=""} / container_spec_memory_limit_bytes{container!="", pod!=""} * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is above 85% of limit for more than 5 minutes"
+
+      # Service availability alerts
+      - alert: ServiceDown
+        expr: up{job="todo-app"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service is down"
+          description: "The todo-app service has been down for more than 2 minutes"
+
+      # Dapr state store issues
+      - alert: DaprStateStoreError
+        expr: rate(dapr_state_get_failed_total[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dapr state store errors detected"
+          description: "Dapr state store get operations are failing at a rate higher than 0.05 per second"
+
+      # Dapr pubsub issues
+      - alert: DaprPubSubError
+        expr: rate(dapr_pubsub_subscription_failed_total[5m]) > 0.01
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dapr pubsub subscription errors detected"
+          description: "Dapr pubsub subscription operations are failing at a rate higher than 0.01 per second"

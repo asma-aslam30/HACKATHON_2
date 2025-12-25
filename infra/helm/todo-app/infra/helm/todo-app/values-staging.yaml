@@ -1,0 +1,82 @@
+# Staging environment values
+# These values are used for the staging environment deployment
+
+global:
+  image:
+    repository: ghcr.io/your-org/todo-app
+    tag: staging-latest
+    pullPolicy: Always
+
+frontend:
+  replicaCount: 2
+  image:
+    tag: staging-latest
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      kubernetes.io/ingress.class: nginx
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: staging.yourdomain.com
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+    tls:
+      - secretName: staging-tls-cert
+        hosts:
+          - staging.yourdomain.com
+
+backend:
+  replicaCount: 2
+  image:
+    tag: staging-latest
+  service:
+    type: ClusterIP
+    port: 8080
+  database:
+    host: postgres-staging
+    port: 5432
+    name: todo_staging
+    user: todo_user
+    password: "staging_password"
+
+mcp:
+  replicaCount: 1
+  image:
+    tag: staging-latest
+  service:
+    type: ClusterIP
+    port: 8081
+
+# Dapr-specific configurations for staging
+dapr:
+  postgres:
+    host: postgres-staging
+    port: 5432
+    user: todo_user
+    password: "staging_password"
+    dbname: todo_staging
+  redis:
+    host: redis-staging
+    port: 6379
+    password: "staging_redis_password"
+  kafka:
+    brokers: "kafka-staging:9092"
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70

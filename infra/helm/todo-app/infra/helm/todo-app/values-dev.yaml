@@ -1,0 +1,66 @@
+# Development environment values
+# These values are used for the development environment deployment
+
+global:
+  image:
+    repository: ghcr.io/your-org/todo-app
+    tag: develop-latest
+    pullPolicy: Always
+
+frontend:
+  replicaCount: 1
+  image:
+    tag: develop-latest
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: false
+
+backend:
+  replicaCount: 1
+  image:
+    tag: develop-latest
+  service:
+    type: ClusterIP
+    port: 8080
+  database:
+    host: postgres-dev
+    port: 5432
+    name: todo_dev
+    user: todo_user
+    password: "dev_password"
+
+mcp:
+  replicaCount: 1
+  image:
+    tag: develop-latest
+  service:
+    type: ClusterIP
+    port: 8081
+
+# Dapr-specific configurations for development
+dapr:
+  postgres:
+    host: postgres-dev
+    port: 5432
+    user: todo_user
+    password: "dev_password"
+    dbname: todo_dev
+  redis:
+    host: redis-dev
+    port: 6379
+    password: "dev_redis_password"
+  kafka:
+    brokers: "kafka-dev:9092"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
