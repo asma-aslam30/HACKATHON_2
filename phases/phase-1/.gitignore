@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Data files (tasks are local)
+data/tasks.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build (if any)
+dist/
+build/

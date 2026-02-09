@@ -1,0 +1,28 @@
+{
+  "name": "cli-todo-mvp",
+  "version": "1.0.0",
+  "description": "Phase 1 CLI Todo Application - Evolution of Todo Project",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": [
+    "todo",
+    "cli",
+    "task-manager"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "boxen": "^8.0.1",
+    "chalk": "^5.3.0",
+    "cli-table3": "^0.6.5",
+    "inquirer": "^9.2.12",
+    "luxon": "^3.7.2",
+    "node-notifier": "^10.0.1",
+    "uuid": "^9.0.1"
+  }
+}

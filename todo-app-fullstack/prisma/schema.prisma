@@ -1,0 +1,361 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum Role {
+  owner
+  admin
+  manager
+  member
+  viewer
+}
+
+enum NotificationType {
+  mention
+  assignment
+  progress_request
+  progress_update
+  member_joined
+  member_left
+  role_changed
+  task_assigned
+  task_completed
+  deadline_approaching
+}
+
+enum EmailStatus {
+  pending
+  sent
+  failed
+  cancelled
+}
+
+model User {
+  id                   String          @id @default(cuid())
+  email                String          @unique
+  name                 String?
+  avatarUrl            String?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  todos                Todo[]
+  profile              Profile?
+  comments             Comment[]
+  ownedLists           SharedList[]    @relation("SharedListOwner")
+  collaborations       Collaboration[]
+  shareLinks           ShareLink[]
+  tags                 Tag[]
+  assignments          Assignment[]    @relation("AssignedUser")
+  createdAssignments   Assignment[]    @relation("AssignmentCreator")
+
+  // Team relations
+  createdTeams         Team[]          @relation("TeamCreator")
+  teamMemberships      TeamMember[]
+  teamMemberInvites    TeamMember[]    @relation("TeamMemberInviter")
+
+  // Project relations
+  ownedProjects        Project[]       @relation("ProjectOwner")
+  projectMemberships   ProjectMember[]
+  projectMemberInvites ProjectMember[] @relation("ProjectMemberInviter")
+  addedProjectTeams    ProjectTeam[]   @relation("ProjectTeamAdder")
+
+  // Progress and notifications
+  progressUpdates      ProgressUpdate[]
+  notifications        Notification[]
+  emailQueue           EmailQueue[]
+
+  @@map("users")
+}
+
+model Profile {
+  id          String  @id @default(cuid())
+  userId      String  @unique
+  bio         String?
+  location    String?
+  website     String?
+  preferences Json?
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
+}
+
+model Todo {
+  id             String        @id @default(cuid())
+  title          String
+  description    String?
+  completed      Boolean       @default(false)
+  priority       String        @default("medium")
+  dueDate        DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tags           String[]
+  comments       Comment[]
+  sharedListId   String?
+  sharedList     SharedList?   @relation(fields: [sharedListId], references: [id], onDelete: SetNull)
+  assignedTo     String[]
+  version        Int           @default(1)
+  lastModifiedBy String?
+  assignments    Assignment[]
+
+  // Project and progress tracking
+  projectId       String?
+  project         Project?        @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  progress        Int             @default(0)
+  progressUpdates ProgressUpdate[]
+
+  @@map("todos")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  userId    String
+  todoId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  todo      Todo     @relation(fields: [todoId], references: [id], onDelete: Cascade)
+  mentions  String[]
+  resolved  Boolean  @default(false)
+
+  @@map("comments")
+}
+
+model SharedList {
+  id              String          @id @default(cuid())
+  name            String
+  description     String?
+  ownerId         String
+  owner           User            @relation("SharedListOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  permissions     Json?
+  maxCollaborators Int            @default(10)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  todos           Todo[]
+  collaborations  Collaboration[]
+  shareLinks      ShareLink[]
+
+  @@map("shared_lists")
+}
+
+model Collaboration {
+  id                   String     @id @default(cuid())
+  listId               String
+  userId               String
+  role                 String     @default("viewer")
+  joinedAt             DateTime   @default(now())
+  notificationsEnabled Boolean    @default(true)
+  sharedList           SharedList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  user                 User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, userId])
+  @@map("collaborations")
+}
+
+model ShareLink {
+  id          String     @id @default(cuid())
+  listId      String
+  accessType  String
+  permissions String
+  createdAt   DateTime   @default(now())
+  expiresAt   DateTime?
+  createdBy   String
+  usageCount  Int        @default(0)
+  maxUses     Int?
+  sharedList  SharedList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  user        User       @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@map("share_links")
+}
+
+model Tag {
+  id     String @id @default(cuid())
+  name   String @unique
+  color  String @default("#3B82F6")
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("tags")
+}
+
+model Assignment {
+  id          String   @id @default(cuid())
+  todoId      String
+  userId      String
+  assignedBy  String
+  status      String   @default("pending")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  todo        Todo     @relation(fields: [todoId], references: [id], onDelete: Cascade)
+  user        User     @relation("AssignedUser", fields: [userId], references: [id], onDelete: Cascade)
+  creator     User     @relation("AssignmentCreator", fields: [assignedBy], references: [id], onDelete: Cascade)
+
+  @@unique([todoId, userId])
+  @@map("assignments")
+}
+
+// ============================================
+// TEAM MODELS (Reusable Team Groups)
+// ============================================
+
+model Team {
+  id          String       @id @default(cuid())
+  name        String
+  description String?
+  avatarUrl   String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  createdBy   String
+  creator     User         @relation("TeamCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  members     TeamMember[]
+  projects    ProjectTeam[]
+
+  @@map("teams")
+}
+
+model TeamMember {
+  id        String   @id @default(cuid())
+  teamId    String
+  userId    String
+  role      Role     @default(member)
+  joinedAt  DateTime @default(now())
+  invitedBy String?
+
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  inviter   User?    @relation("TeamMemberInviter", fields: [invitedBy], references: [id], onDelete: SetNull)
+
+  @@unique([teamId, userId])
+  @@map("team_members")
+}
+
+// ============================================
+// PROJECT MODELS
+// ============================================
+
+model Project {
+  id          String          @id @default(cuid())
+  name        String
+  description String?
+  status      String          @default("active")
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  ownerId     String
+  settings    Json?
+
+  owner       User            @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members     ProjectMember[]
+  teams       ProjectTeam[]
+  todos       Todo[]
+
+  @@map("projects")
+}
+
+model ProjectMember {
+  id                   String   @id @default(cuid())
+  projectId            String
+  userId               String
+  role                 Role     @default(member)
+  joinedAt             DateTime @default(now())
+  invitedBy            String?
+  notificationsEnabled Boolean  @default(true)
+
+  project              Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  inviter              User?    @relation("ProjectMemberInviter", fields: [invitedBy], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+model ProjectTeam {
+  id        String   @id @default(cuid())
+  projectId String
+  teamId    String
+  role      Role     @default(member)
+  addedAt   DateTime @default(now())
+  addedBy   String?
+
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  adder     User?    @relation("ProjectTeamAdder", fields: [addedBy], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, teamId])
+  @@map("project_teams")
+}
+
+// ============================================
+// PROGRESS TRACKING
+// ============================================
+
+model ProgressUpdate {
+  id          String   @id @default(cuid())
+  todoId      String
+  percentage  Int      @default(0)
+  note        String?
+  createdAt   DateTime @default(now())
+  updatedBy   String
+
+  todo        Todo     @relation(fields: [todoId], references: [id], onDelete: Cascade)
+  updater     User     @relation(fields: [updatedBy], references: [id], onDelete: Cascade)
+
+  @@map("progress_updates")
+}
+
+// ============================================
+// NOTIFICATION SYSTEM
+// ============================================
+
+model Notification {
+  id          String           @id @default(cuid())
+  userId      String
+  type        NotificationType
+  title       String
+  message     String
+  data        Json?
+  read        Boolean          @default(false)
+  readAt      DateTime?
+  actionUrl   String?
+  createdAt   DateTime         @default(now())
+
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+model EmailQueue {
+  id          String      @id @default(cuid())
+  userId      String
+  templateId  String?
+  subject     String
+  body        String
+  metadata    Json?
+  status      EmailStatus @default(pending)
+  attempts    Int         @default(0)
+  lastError   String?
+  scheduledAt DateTime    @default(now())
+  sentAt      DateTime?
+  createdAt   DateTime    @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledAt])
+  @@map("email_queue")
+}

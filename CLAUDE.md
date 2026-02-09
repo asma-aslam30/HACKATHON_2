@@ -208,3 +208,10 @@ Wait for consent; never auto-create ADRs. Group related decisions (stacks, authe
 
 ## Code Standards
 See `.specify/memory/constitution.md` for code quality, testing, performance, security, and architecture principles.
+
+## Active Technologies
+- Node.js (ES6 modules) + inquirer v9.2.12, chalk v5.3.0, uuid v9.0.1, **luxon v3.4.0** (new), **node-notifier v10.0.0** (new) (003-intelligent-features)
+- JSON file (`phases/phase-1/data/tasks.json`) (003-intelligent-features)
+
+## Recent Changes
+- 003-intelligent-features: Added Node.js (ES6 modules) + inquirer v9.2.12, chalk v5.3.0, uuid v9.0.1, **luxon v3.4.0** (new), **node-notifier v10.0.0** (new)
