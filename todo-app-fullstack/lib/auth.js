@@ -15,7 +15,7 @@ export const auth = betterAuth({
   secret: process.env.AUTH_SECRET || "fallback-secret-change-this",
   emailAndPassword: {
     enabled: true,
-    requireEmailVerification: true, // Set to true to require email verification
+    requireEmailVerification: false, // Set to true only when SMTP is fully configured
   },
   account: {
     accountLinking: {

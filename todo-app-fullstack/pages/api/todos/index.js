@@ -47,6 +47,10 @@ export default async function handler(req, res) {
           priority: priority || 'medium',
           dueDate: dueDate ? new Date(dueDate) : null,
           userId
+        },
+        include: {
+          comments: true,
+          assignments: true
         }
       })
 

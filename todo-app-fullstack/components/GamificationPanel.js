@@ -8,10 +8,11 @@ export default function GamificationPanel({ userStats }) {
   const [badges, setBadges] = useState(userStats?.badges || []);
   const [showXPGain, setShowXPGain] = useState(null);
 
-  // Calculate XP needed for next level (simplified: 100 XP per level)
-  const xpToNextLevel = level * 100;
-  const currentLevelXP = currentXP % xpToNextLevel;
-  const progress = (currentLevelXP / xpToNextLevel) * 100;
+  // Each level requires 100 XP (matches index.js: Math.floor(totalXP / 100) + 1)
+  const XP_PER_LEVEL = 100;
+  const xpToNextLevel = XP_PER_LEVEL;
+  const currentLevelXP = currentXP % XP_PER_LEVEL;
+  const progress = (currentLevelXP / XP_PER_LEVEL) * 100;
 
   // Handle XP gain animation
   useEffect(() => {
@@ -78,7 +79,7 @@ export default function GamificationPanel({ userStats }) {
             />
           </div>
           <p className="text-xs text-gray-600 dark:text-gray-400">
-            {xpToNextLevel - currentLevelXP} XP to Level {level + 1}
+            {XP_PER_LEVEL - currentLevelXP} XP to Level {level + 1}
           </p>
         </div>
 

@@ -1,12 +1,12 @@
 'use client'
 
 import { createContext, useContext, useState, useEffect } from 'react'
-import { useSession, signIn, signOut } from '../lib/auth-client'
+import { useSession, signIn, signOut, signUp } from '../lib/auth-client'
 
 const AppContext = createContext(null)
 
 export function AppProvider({ children }) {
-  const { data: session, isPending, signIn, signOut } = useSession()
+  const { data: session, isPending } = useSession()
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notifications, setNotifications] = useState([])
@@ -36,11 +36,10 @@ export function AppProvider({ children }) {
 
   const signup = async (email, password, name) => {
     try {
-      const result = await signIn.email({
+      const result = await signUp.email({
         email,
         password,
-        firstName: name?.split(' ')[0],
-        lastName: name?.split(' ').slice(1).join(' '),
+        name: name || email.split('@')[0],
         callbackURL: '/' // Redirect after signup
       })
       if (result?.error) {

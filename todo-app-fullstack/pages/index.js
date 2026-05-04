@@ -15,29 +15,7 @@ export default function HomePage() {
   const router = useRouter()
   const { user, loading, addNotification } = useApp()
 
-  // Redirect to auth page if not authenticated
-  useEffect(() => {
-    if (!loading && !user) {
-      router.push('/auth')
-    }
-  }, [user, loading, router])
-
-  // Show loading state while checking authentication
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
-        </div>
-      </div>
-    )
-  }
-
-  // Redirect if not authenticated
-  if (!user) {
-    return null
-  }
+  // All hooks must be called unconditionally before any early returns
   const [todos, setTodos] = useState([])
   const [tasksLoading, setTasksLoading] = useState(true)
   const [filter, setFilter] = useState('all')
@@ -60,11 +38,35 @@ export default function HomePage() {
   const [achievement, setAchievement] = useState(null);
   const [showAchievementModal, setShowAchievementModal] = useState(false);
 
+  // Redirect to auth page if not authenticated
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push('/auth')
+    }
+  }, [user, loading, router])
+
   useEffect(() => {
     if (user) {
       loadTodos()
     }
   }, [user])
+
+  // Show loading state while checking authentication
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Redirect if not authenticated
+  if (!user) {
+    return null
+  }
 
   const loadTodos = async () => {
     try {

@@ -43,6 +43,10 @@ export default async function handler(req, res) {
           ...(dueDate !== undefined && { dueDate: dueDate ? new Date(dueDate) : null }),
           version: { increment: 1 },
           lastModifiedBy: userId
+        },
+        include: {
+          comments: true,
+          assignments: true
         }
       })
 
