@@ -22,7 +22,7 @@
     "better-auth": "^1.4.9",
     "canvas-confetti": "^1.9.4",
     "framer-motion": "^12.23.26",
-    "lucide-react": "^0.263.0",
+    "lucide-react": "^1.14.0",
     "next": "^16.1.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
