@@ -1,433 +1,502 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
-import Layout from '../components/layout/Layout'
 import { useApp } from '../context/AppContext'
 import TaskCard from '../components/todos/TaskCard'
 import TaskForm from '../components/todos/TaskForm'
-import ShareModal from '../components/collaboration/ShareModal'
-import CommentsPanel from '../components/collaboration/CommentsPanel'
+import TaskDetailModal from '../components/todos/TaskDetailModal'
+import GamificationPanel from '../components/GamificationPanel'
+import PomodoroTimer from '../components/PomodoroTimer'
+import TimeTracker from '../components/TimeTracker'
+import TemplateManager from '../components/TemplateManager'
 import Modal from '../components/ui/Modal'
 import Button from '../components/ui/Button'
-import GamificationPanel from '../components/GamificationPanel'
-import AchievementModal from '../components/AchievementModal'
+import { useKeyboardShortcuts, ShortcutHelp } from '../lib/useKeyboardShortcuts'
+import { initNotifications, rescheduleNotification } from '../lib/notificationService'
+import { getDueDateStatus } from '../lib/dateUtils'
+
+const XP_PER_COMPLETION = 10
+const STREAK_BONUS = 5
 
 export default function HomePage() {
   const router = useRouter()
   const { user, loading, addNotification } = useApp()
 
-  // All hooks must be called unconditionally before any early returns
+  // ── Task state ──────────────────────────────────────────────
   const [todos, setTodos] = useState([])
   const [tasksLoading, setTasksLoading] = useState(true)
   const [filter, setFilter] = useState('all')
-  const [priority, setPriority] = useState('all')
+  const [sort, setSort] = useState('created')
   const [search, setSearch] = useState('')
+
+  // ── Modals ───────────────────────────────────────────────────
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editingTask, setEditingTask] = useState(null)
+  const [detailTask, setDetailTask] = useState(null)
   const [shareTask, setShareTask] = useState(null)
-  const [commentTask, setCommentTask] = useState(null)
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [showShortcuts, setShowShortcuts] = useState(false)
 
-  // Gamification state
+  // ── Templates ────────────────────────────────────────────────
+  const [templates, setTemplates] = useState([])
+
+  // ── Time tracking ────────────────────────────────────────────
+  const [activeTimerTask, setActiveTimerTask] = useState(null)
+
+  // ── Gamification ─────────────────────────────────────────────
   const [userStats, setUserStats] = useState({
-    totalXP: 0,
-    level: 1,
-    streak: 0,
-    lastStreakDate: null, // Track the last day a task was completed
-    badges: [],
-    lastXPGain: 0
+    totalXP: 0, level: 1, streak: 0, lastStreakDate: null, badges: [], lastXPGain: 0,
   })
-  const [achievement, setAchievement] = useState(null);
-  const [showAchievementModal, setShowAchievementModal] = useState(false);
 
-  // Redirect to auth page if not authenticated
+  // ── Keyboard shortcuts ────────────────────────────────────────
+  const shortcuts = [
+    { key: 'n', label: 'New Task', handler: () => setShowCreateModal(true) },
+    { key: '/', label: 'Search', handler: () => document.querySelector('[data-search]')?.focus() },
+    { key: '?', label: 'Show shortcuts', handler: () => setShowShortcuts(true) },
+    { key: 'Escape', label: 'Close modal', handler: () => {
+      setShowCreateModal(false); setEditingTask(null); setDetailTask(null); setShowShortcuts(false)
+    }},
+  ]
+  useKeyboardShortcuts(shortcuts)
+
+  // ── Auth guard ────────────────────────────────────────────────
   useEffect(() => {
-    if (!loading && !user) {
-      router.push('/auth')
-    }
+    if (!loading && !user) router.push('/auth')
   }, [user, loading, router])
 
-  useEffect(() => {
-    if (user) {
-      loadTodos()
+  // ── Load tasks ────────────────────────────────────────────────
+  const loadTodos = useCallback(async () => {
+    try {
+      const params = new URLSearchParams()
+      if (filter !== 'all') params.set('filter', filter)
+      if (sort !== 'created') params.set('sort', sort)
+      if (search) params.set('search', search)
+      const res = await fetch(`/api/todos?${params}`)
+      const data = await res.json()
+      if (res.ok) {
+        setTodos(Array.isArray(data) ? data : [])
+        initNotifications(Array.isArray(data) ? data : [])
+      }
+    } catch (err) {
+      console.error('Failed to load tasks:', err)
+    } finally {
+      setTasksLoading(false)
     }
-  }, [user])
+  }, [filter, sort, search])
 
-  // Show loading state while checking authentication
+  useEffect(() => { if (user) loadTodos() }, [user, loadTodos])
+
+  // ── Load templates ────────────────────────────────────────────
+  const loadTemplates = useCallback(async () => {
+    try {
+      const res = await fetch('/api/templates')
+      if (res.ok) setTemplates(await res.json())
+    } catch {}
+  }, [])
+
+  useEffect(() => { if (user) loadTemplates() }, [user, loadTemplates])
+
+  // ── Gamification helpers ──────────────────────────────────────
+  const gainXP = (amount) => {
+    setUserStats(prev => {
+      const totalXP = prev.totalXP + amount
+      const level = Math.floor(totalXP / 100) + 1
+      const today = new Date().toDateString()
+      const isNewStreak = prev.lastStreakDate !== today
+      const streak = isNewStreak ? prev.streak + 1 : prev.streak
+      return { ...prev, totalXP, level, streak, lastStreakDate: today, lastXPGain: amount }
+    })
+  }
+
+  // ── Loading / auth guards ─────────────────────────────────────
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center">
-          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
           <p className="mt-4 text-gray-600">Loading...</p>
         </div>
       </div>
     )
   }
+  if (!user) return null
 
-  // Redirect if not authenticated
-  if (!user) {
-    return null
-  }
-
-  const loadTodos = async () => {
-    try {
-      const res = await fetch('/api/todos', {
-        headers: { 'x-user-id': user.id }
-      })
-      const data = await res.json()
-      setTodos(data)
-    } catch (error) {
-      console.error('Failed to load todos:', error)
-    } finally {
-      setTasksLoading(false)
-    }
-  }
-
-  const createTodo = async (data) => {
+  // ── Task actions ──────────────────────────────────────────────
+  const handleCreateTask = async (formData) => {
     const res = await fetch('/api/todos', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-user-id': user.id
-      },
-      body: JSON.stringify(data)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(formData),
     })
-    const todo = await res.json()
-    setTodos([todo, ...todos])
+    if (!res.ok) throw new Error('Failed to create task')
+    const newTodo = await res.json()
+    setTodos(prev => [newTodo, ...prev])
+    rescheduleNotification(newTodo)
     setShowCreateModal(false)
-    addNotification({ type: 'success', message: 'Task created successfully!' })
+    addNotification?.('Task created!', 'success')
   }
 
-  const updateTodo = async (data) => {
+  const handleUpdateTask = async (formData) => {
     const res = await fetch(`/api/todos/${editingTask.id}`, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-user-id': user.id
-      },
-      body: JSON.stringify(data)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(formData),
     })
-    const updated = await res.json()
-    setTodos(todos.map(t => t.id === updated.id ? updated : t))
+    if (!res.ok) throw new Error('Failed to update task')
+    const { todo, newRecurringTask } = await res.json()
+    setTodos(prev => {
+      const updated = prev.map(t => t.id === todo.id ? todo : t)
+      return newRecurringTask ? [newRecurringTask, ...updated] : updated
+    })
+    rescheduleNotification(todo)
     setEditingTask(null)
-    addNotification({ type: 'success', message: 'Task updated!' })
+    addNotification?.('Task updated!', 'success')
   }
 
-  const toggleTodo = async (id, completed) => {
+  const handleToggle = async (id, currentCompleted) => {
     const res = await fetch(`/api/todos/${id}`, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-user-id': user.id
-      },
-      body: JSON.stringify({ completed: !completed })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ completed: !currentCompleted }),
     })
-    const updated = await res.json()
-    setTodos(todos.map(t => t.id === id ? updated : t))
-
-    // Handle gamification if task is being completed (not uncompleted)
-    if (!completed) {
-      // Calculate XP based on task priority
-      const xpGain = updated.priority === 'high' ? 20 : updated.priority === 'medium' ? 15 : 10
-
-      // Update user stats with XP gain
-      setUserStats(prev => {
-        const newTotalXP = prev.totalXP + xpGain
-        const newLevel = Math.floor(newTotalXP / 100) + 1
-
-        // Calculate new streak
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        let newStreak = prev.streak;
-        let newLastStreakDate = prev.lastStreakDate;
-
-        if (!prev.lastStreakDate) {
-          // First time completing a task
-          newStreak = 1;
-          newLastStreakDate = today.toISOString();
-        } else {
-          const lastDate = new Date(prev.lastStreakDate);
-          lastDate.setHours(0, 0, 0, 0);
-
-          const yesterday = new Date();
-          yesterday.setDate(yesterday.getDate() - 1);
-          yesterday.setHours(0, 0, 0, 0);
-
-          if (lastDate.getTime() === today.getTime()) {
-            // Already completed a task today, don't increase streak
-            newStreak = prev.streak;
-            newLastStreakDate = prev.lastStreakDate;
-          } else if (lastDate.getTime() === yesterday.getTime()) {
-            // Completed yesterday, continuing streak
-            newStreak = prev.streak + 1;
-            newLastStreakDate = today.toISOString();
-          } else {
-            // Streak broken, reset to 1
-            newStreak = 1;
-            newLastStreakDate = today.toISOString();
-          }
-        }
-
-        const newBadges = [...prev.badges]
-
-        // Check for achievements based on XP and streak
-        let newAchievement = null;
-        if (newTotalXP >= 100 && !prev.badges.some(b => b.id === 'first_level')) {
-          // First level achievement
-          newAchievement = {
-            id: 'first_level',
-            name: 'First Level',
-            description: 'Reach level 2',
-            icon: '⭐',
-            rarity: 'common',
-            xpBonus: 50
-          };
-          newBadges.push(newAchievement);
-        } else if (newStreak >= 3 && !prev.badges.some(b => b.id === 'triple_streak')) {
-          // 3-day streak achievement
-          newAchievement = {
-            id: 'triple_streak',
-            name: 'Triple Streak',
-            description: 'Complete tasks for 3 consecutive days',
-            icon: '🔥',
-            rarity: 'rare',
-            xpBonus: 100
-          };
-          newBadges.push(newAchievement);
-        } else if (newTotalXP >= 500 && !prev.badges.some(b => b.id === 'xp_master')) {
-          // 500 XP achievement
-          newAchievement = {
-            id: 'xp_master',
-            name: 'XP Master',
-            description: 'Earn 500 total XP',
-            icon: '👑',
-            rarity: 'epic',
-            xpBonus: 200
-          };
-          newBadges.push(newAchievement);
-        }
-
-        // If there's a new achievement, show the modal
-        if (newAchievement) {
-          setAchievement(newAchievement);
-          setShowAchievementModal(true);
-
-          // Add the achievement's XP bonus to the total
-          return {
-            ...prev,
-            totalXP: newTotalXP + newAchievement.xpBonus,
-            level: newLevel,
-            streak: newStreak,
-            lastStreakDate: newLastStreakDate,
-            badges: newBadges,
-            lastXPGain: xpGain + newAchievement.xpBonus
-          };
-        }
-
-        return {
-          ...prev,
-          totalXP: newTotalXP,
-          level: newLevel,
-          streak: newStreak,
-          lastStreakDate: newLastStreakDate,
-          badges: newBadges,
-          lastXPGain: xpGain
-        };
-      });
+    if (!res.ok) return
+    const { todo, newRecurringTask } = await res.json()
+    setTodos(prev => {
+      const updated = prev.map(t => t.id === todo.id ? todo : t)
+      return newRecurringTask ? [newRecurringTask, ...updated] : updated
+    })
+    if (!currentCompleted) {
+      gainXP(XP_PER_COMPLETION)
+      if (todo.recurrencePattern) {
+        addNotification?.(`↺ New recurring task created!`, 'success')
+      }
     }
   }
 
-  const deleteTodo = async (id) => {
-    await fetch(`/api/todos/${id}`, {
-      method: 'DELETE',
-      headers: { 'x-user-id': user.id }
+  const handleDelete = async (id) => {
+    const res = await fetch(`/api/todos/${id}`, { method: 'DELETE' })
+    if (res.ok) setTodos(prev => prev.filter(t => t.id !== id))
+  }
+
+  // ── Subtask actions ───────────────────────────────────────────
+  const handleSubtaskAdd = async (todoId, title) => {
+    const res = await fetch('/api/subtasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ todoId, title }),
     })
-    setTodos(todos.filter(t => t.id !== id))
-    addNotification({ type: 'info', message: 'Task deleted' })
+    if (!res.ok) throw new Error('Failed to add subtask')
+    const subtask = await res.json()
+    const updateTodo = t => t.id === todoId
+      ? { ...t, subtasks: [...(t.subtasks || []), subtask] }
+      : t
+    setTodos(prev => prev.map(updateTodo))
+    if (detailTask?.id === todoId) setDetailTask(prev => updateTodo(prev))
   }
 
-  // Filter todos
-  const filteredTodos = todos.filter(todo => {
-    if (filter === 'active' && todo.completed) return false
-    if (filter === 'completed' && !todo.completed) return false
-    if (priority !== 'all' && todo.priority !== priority) return false
-    if (search && !todo.title.toLowerCase().includes(search.toLowerCase())) return false
-    return true
-  })
-
-  const stats = {
-    total: todos.length,
-    completed: todos.filter(t => t.completed).length,
-    pending: todos.filter(t => !t.completed).length
+  const handleSubtaskToggle = async (todoId, subtaskId) => {
+    const todo = todos.find(t => t.id === todoId)
+    const sub = todo?.subtasks?.find(s => s.id === subtaskId)
+    if (!sub) return
+    const res = await fetch(`/api/subtasks/${subtaskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ completed: !sub.completed }),
+    })
+    if (!res.ok) return
+    const updated = await res.json()
+    const updateTodo = t => t.id === todoId
+      ? { ...t, subtasks: t.subtasks.map(s => s.id === subtaskId ? updated : s) }
+      : t
+    setTodos(prev => prev.map(updateTodo))
+    if (detailTask?.id === todoId) setDetailTask(prev => updateTodo(prev))
   }
+
+  const handleSubtaskDelete = async (todoId, subtaskId) => {
+    const res = await fetch(`/api/subtasks/${subtaskId}`, { method: 'DELETE' })
+    if (!res.ok) return
+    const updateTodo = t => t.id === todoId
+      ? { ...t, subtasks: t.subtasks.filter(s => s.id !== subtaskId) }
+      : t
+    setTodos(prev => prev.map(updateTodo))
+    if (detailTask?.id === todoId) setDetailTask(prev => updateTodo(prev))
+  }
+
+  // ── Timer actions ─────────────────────────────────────────────
+  const handleTimerToggle = async (task) => {
+    if (activeTimerTask?.id === task.id) {
+      // Stop
+      await fetch('/api/time-entries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ todoId: task.id, action: 'stop' }),
+      })
+      setActiveTimerTask(null)
+      loadTodos() // refresh totalTimeMs
+    } else {
+      // Stop any running timer first
+      if (activeTimerTask) {
+        await fetch('/api/time-entries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ todoId: activeTimerTask.id, action: 'stop' }),
+        })
+      }
+      await fetch('/api/time-entries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ todoId: task.id, action: 'start' }),
+      })
+      setActiveTimerTask(task)
+    }
+  }
+
+  const handleTimerStop = async (taskId, elapsedMs) => {
+    await fetch('/api/time-entries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ todoId: taskId, action: 'stop', durationMs: elapsedMs }),
+    })
+    setActiveTimerTask(null)
+    loadTodos()
+  }
+
+  // ── Template actions ──────────────────────────────────────────
+  const handleTemplateSave = async (data) => {
+    const res = await fetch('/api/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    })
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.error || 'Failed to save template')
+    }
+    await loadTemplates()
+  }
+
+  const handleTemplateDelete = async (id) => {
+    await fetch(`/api/templates/${id}`, { method: 'DELETE' })
+    await loadTemplates()
+  }
+
+  // ── Stats ─────────────────────────────────────────────────────
+  const overdueCount = todos.filter(t => !t.completed && getDueDateStatus(t.dueDate)?.isOverdue).length
+
+  const filterOptions = [
+    { value: 'all', label: 'All' },
+    { value: 'active', label: 'Active' },
+    { value: 'completed', label: 'Done' },
+    { value: 'overdue', label: `Overdue${overdueCount > 0 ? ` (${overdueCount})` : ''}` },
+    { value: 'due_today', label: 'Due Today' },
+    { value: 'due_this_week', label: 'This Week' },
+  ]
 
   return (
-    <Layout>
-      <div className="space-y-6">
-        {/* Gamification Panel */}
-        <GamificationPanel userStats={userStats} />
-
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">My Tasks</h1>
-            <p className="text-gray-500">
-              {stats.completed} of {stats.total} tasks completed
-            </p>
-          </div>
-          <Button onClick={() => setShowCreateModal(true)}>
-            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            New Task
-          </Button>
-        </div>
-
-        {/* Filters */}
-        <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-          <div className="flex flex-col md:flex-row gap-4">
-            {/* Search */}
-            <div className="flex-1 relative">
-              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              <input
-                type="text"
-                placeholder="Search tasks..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              />
-            </div>
-
-            {/* Status Filter */}
-            <div className="flex items-center gap-2">
-              {['all', 'active', 'completed'].map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setFilter(f)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    filter === f
-                      ? 'bg-indigo-100 text-indigo-700'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  {f.charAt(0).toUpperCase() + f.slice(1)}
-                </button>
-              ))}
-            </div>
-
-            {/* Priority Filter */}
-            <select
-              value={priority}
-              onChange={(e) => setPriority(e.target.value)}
-              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="all">All Priorities</option>
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Task List */}
-        {tasksLoading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[...Array(6)].map((_, i) => (
-              <div key={i} className="bg-white rounded-xl p-4 animate-pulse">
-                <div className="h-4 bg-gray-200 rounded w-3/4 mb-3" />
-                <div className="h-3 bg-gray-200 rounded w-1/2 mb-4" />
-                <div className="flex gap-2">
-                  <div className="h-6 bg-gray-200 rounded w-16" />
-                  <div className="h-6 bg-gray-200 rounded w-20" />
-                </div>
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-indigo-600 rounded-xl flex items-center justify-center">
+                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                </svg>
               </div>
-            ))}
-          </div>
-        ) : filteredTodos.length === 0 ? (
-          <div className="text-center py-16 bg-white rounded-xl border border-gray-100">
-            <svg className="w-16 h-16 mx-auto text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>
-            <h3 className="text-lg font-medium text-gray-900 mb-2">No tasks found</h3>
-            <p className="text-gray-500 mb-4">
-              {search || filter !== 'all' || priority !== 'all'
-                ? 'Try adjusting your filters'
-                : 'Create your first task to get started!'
-              }
-            </p>
-            {!search && filter === 'all' && priority === 'all' && (
-              <Button onClick={() => setShowCreateModal(true)}>
-                Create Task
+              <span className="font-bold text-gray-900 text-lg">TodoApp</span>
+            </div>
+
+            {/* Search */}
+            <div className="flex-1 max-w-md mx-6">
+              <div className="relative">
+                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <input
+                  data-search
+                  type="text"
+                  placeholder="Search tasks… (/)"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-gray-50"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowShortcuts(true)}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+                title="Keyboard shortcuts (?)"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </button>
+              <button
+                onClick={() => setShowTemplates(true)}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+                title="Templates"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                </svg>
+              </button>
+              <Button onClick={() => setShowCreateModal(true)} size="sm">
+                <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                New Task (N)
               </Button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Overdue banner */}
+      {overdueCount > 0 && filter !== 'overdue' && (
+        <div
+          onClick={() => setFilter('overdue')}
+          className="cursor-pointer bg-red-500 text-white text-center text-sm py-2 font-medium hover:bg-red-600 transition-colors"
+        >
+          ⚠ {overdueCount} overdue task{overdueCount > 1 ? 's' : ''} — click to view
+        </div>
+      )}
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+
+          {/* Sidebar */}
+          <aside className="lg:col-span-1 space-y-4">
+            <GamificationPanel
+              currentXP={userStats.totalXP % 100}
+              level={userStats.level}
+              streak={userStats.streak}
+              badges={userStats.badges}
+              lastXPGain={userStats.lastXPGain}
+            />
+            <TimeTracker activeTask={activeTimerTask} onStop={handleTimerStop} />
+            <PomodoroTimer />
+          </aside>
+
+          {/* Main content */}
+          <main className="lg:col-span-3 space-y-5">
+            {/* Filters & sort */}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap gap-1.5">
+                {filterOptions.map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setFilter(opt.value)}
+                    className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                      filter === opt.value
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-white text-gray-600 border border-gray-200 hover:border-indigo-300'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <div className="ml-auto">
+                <select
+                  value={sort}
+                  onChange={e => setSort(e.target.value)}
+                  className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="created">Sort: Newest</option>
+                  <option value="due_date">Sort: Due Date</option>
+                  <option value="priority">Sort: Priority</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Task list */}
+            {tasksLoading ? (
+              <div className="text-center py-16 text-gray-400">
+                <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                <p className="text-sm">Loading tasks...</p>
+              </div>
+            ) : todos.length === 0 ? (
+              <div className="text-center py-20">
+                <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                  <svg className="w-8 h-8 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                </div>
+                <p className="text-gray-500 font-medium">No tasks yet</p>
+                <p className="text-gray-400 text-sm mt-1">Press <kbd className="px-1.5 py-0.5 bg-gray-100 rounded text-xs font-mono">N</kbd> to add one</p>
+                <Button className="mt-4" onClick={() => setShowCreateModal(true)}>Create your first task</Button>
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                {todos.map(task => (
+                  <div key={task.id} onClick={() => setDetailTask(task)} className="cursor-pointer">
+                    <TaskCard
+                      task={task}
+                      onToggle={(id, c) => { handleToggle(id, c); }}
+                      onDelete={handleDelete}
+                      onEdit={(t) => { setEditingTask(t); }}
+                      onShare={setShareTask}
+                      onStartTimer={handleTimerToggle}
+                      activeTimerTaskId={activeTimerTask?.id}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                ))}
+              </div>
             )}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredTodos.map((todo) => (
-              <TaskCard
-                key={todo.id}
-                task={todo}
-                onToggle={toggleTodo}
-                onDelete={deleteTodo}
-                onEdit={setEditingTask}
-                onShare={setShareTask}
-                onComment={setCommentTask}
-              />
-            ))}
-          </div>
-        )}
+          </main>
+        </div>
       </div>
 
-      {/* Create Task Modal */}
-      <Modal
-        isOpen={showCreateModal}
-        onClose={() => setShowCreateModal(false)}
-        title="Create New Task"
-      >
+      {/* Create Modal */}
+      <Modal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} title="New Task" size="lg">
         <TaskForm
-          onSubmit={createTodo}
+          templates={templates}
+          onSubmit={handleCreateTask}
           onCancel={() => setShowCreateModal(false)}
         />
       </Modal>
 
-      {/* Edit Task Modal */}
-      <Modal
-        isOpen={!!editingTask}
-        onClose={() => setEditingTask(null)}
-        title="Edit Task"
-      >
+      {/* Edit Modal */}
+      <Modal isOpen={!!editingTask} onClose={() => setEditingTask(null)} title="Edit Task" size="lg">
         {editingTask && (
           <TaskForm
             initialValues={editingTask}
-            onSubmit={updateTodo}
+            templates={templates}
+            onSubmit={handleUpdateTask}
             onCancel={() => setEditingTask(null)}
           />
         )}
       </Modal>
 
-      {/* Share Modal */}
-      <ShareModal
-        isOpen={!!shareTask}
-        onClose={() => setShareTask(null)}
-        item={shareTask}
-        type="task"
+      {/* Task Detail Modal */}
+      <TaskDetailModal
+        task={detailTask}
+        isOpen={!!detailTask}
+        onClose={() => setDetailTask(null)}
+        onSubtaskAdd={handleSubtaskAdd}
+        onSubtaskToggle={handleSubtaskToggle}
+        onSubtaskDelete={handleSubtaskDelete}
+        onEdit={(t) => { setDetailTask(null); setEditingTask(t) }}
       />
 
-      {/* Comments Panel */}
-      <CommentsPanel
-        taskId={commentTask?.id}
-        isOpen={!!commentTask}
-        onClose={() => setCommentTask(null)}
+      {/* Templates Manager */}
+      <TemplateManager
+        templates={templates}
+        isOpen={showTemplates}
+        onClose={() => setShowTemplates(false)}
+        onSave={handleTemplateSave}
+        onDelete={handleTemplateDelete}
       />
 
-      {/* Achievement Modal */}
-      <AchievementModal
-        achievement={achievement}
-        isOpen={showAchievementModal}
-        onClose={() => setShowAchievementModal(false)}
+      {/* Keyboard shortcuts help */}
+      <ShortcutHelp
+        shortcuts={shortcuts}
+        isOpen={showShortcuts}
+        onClose={() => setShowShortcuts(false)}
       />
-    </Layout>
+    </div>
   )
 }
