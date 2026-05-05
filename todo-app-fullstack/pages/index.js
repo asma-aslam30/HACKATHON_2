@@ -304,6 +304,9 @@ export default function HomePage() {
                 </svg>
               </div>
               <span className="font-bold text-gray-900 text-lg">TodoApp</span>
+              <a href="/chat" className="ml-2 px-2.5 py-1 text-xs font-medium bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-full hover:opacity-90 transition-opacity flex items-center gap-1">
+                ✦ AI Chat
+              </a>
             </div>
 
             {/* Search */}
