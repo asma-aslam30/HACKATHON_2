@@ -34,7 +34,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        os.getenv("FRONTEND_URL", "http://localhost:3001"),
+        os.getenv("FRONTEND_URL", "http://localhost:3000"),
         "http://localhost:3000",
         "http://localhost:3001",
         "https://*.vercel.app",

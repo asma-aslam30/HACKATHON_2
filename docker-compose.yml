@@ -1,130 +1,56 @@
-# Docker Compose for Evolution of Todo
-# Local Development Configuration
-# Version: 1.0.0
+# Docker Compose — Todo App (Phase III/IV)
+# Uses Neon DB (no local postgres needed)
+# Usage:
+#   1. Copy backend/.env.example to backend/.env and fill values
+#   2. Copy todo-app-fullstack/.env.local.example to todo-app-fullstack/.env.local and fill values
+#   3. docker-compose up --build
 
 version: '3.9'
 
 services:
-  # ============================================
-  # Database (PostgreSQL)
-  # ============================================
-  db:
-    build:
-      context: .
-      dockerfile: infra/docker/Dockerfile.db
-    container_name: evolution-todo-db
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-evolution_todo_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password}
-      POSTGRES_DB: ${POSTGRES_DB:-evolution_todo}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - evolution-todo-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-evolution_todo_user}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
 
-  # ============================================
-  # Backend (FastAPI)
-  # ============================================
+  # ── FastAPI Backend ──────────────────────────────────────────────────────────
   backend:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.backend
-    container_name: evolution-todo-backend
+    container_name: todo-backend
+    env_file:
+      - backend/.env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-evolution_todo_user}:${POSTGRES_PASSWORD:-dev_password}@db:5432/${POSTGRES_DB:-evolution_todo}
-      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
-      ENVIRONMENT: ${ENVIRONMENT:-development}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret}
-      JWT_ALGORITHM: HS256
-      JWT_EXPIRATION_MINUTES: 60
+      FRONTEND_URL: http://localhost:3000
     ports:
       - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
     networks:
-      - evolution-todo-network
+      - todo-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 20s
     restart: unless-stopped
-    # For development: mount source code
-    volumes:
-      - ./backend:/app:delegated
 
-  # ============================================
-  # Frontend (Next.js)
-  # ============================================
+  # ── Next.js Frontend ─────────────────────────────────────────────────────────
   frontend:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.frontend
-    container_name: evolution-todo-frontend
+    container_name: todo-frontend
+    env_file:
+      - todo-app-fullstack/.env.local
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-      NEXT_PUBLIC_ENV: ${NEXT_PUBLIC_ENV:-development}
-      NODE_ENV: ${NODE_ENV:-production}
+      NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
     ports:
-      - "3000:80"
+      - "3000:3000"
     depends_on:
       backend:
         condition: service_healthy
     networks:
-      - evolution-todo-network
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      - todo-network
     restart: unless-stopped
 
-  # ============================================
-  # Redis (Optional - for caching)
-  # ============================================
-  redis:
-    image: redis:7-alpine
-    container_name: evolution-todo-redis
-    ports:
-      - "6379:6379"
-    networks:
-      - evolution-todo-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-
-# ============================================
-# Networks
-# ============================================
 networks:
-  evolution-todo-network:
+  todo-network:
     driver: bridge
-    name: evolution-todo-network
-
-# ============================================
-# Volumes
-# ============================================
-volumes:
-  postgres-data:
-    driver: local
-    name: evolution-todo-postgres-data
-  redis-data:
-    driver: local
-    name: evolution-todo-redis-data
