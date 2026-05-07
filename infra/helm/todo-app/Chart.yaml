@@ -1,0 +1,14 @@
+apiVersion: v2
+name: todo-app
+description: Evolution of Todo — AI-Powered Cloud-Native App (Hackathon II)
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - todo
+  - fastapi
+  - nextjs
+  - gemini
+  - kubernetes
+maintainers:
+  - name: asma-aslam30

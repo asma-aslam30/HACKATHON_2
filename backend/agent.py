@@ -28,8 +28,18 @@ Guidelines:
 - If a user mentions "urgent", "important", or "asap", set priority to "high".
 - If a user says "delete the meeting task" or similar (no ID), first call list_tasks to find the right task.
 - Handle errors gracefully — if a task ID doesn't exist, say so kindly.
-- Support Urdu language if the user writes in Urdu.
-- Keep responses concise and action-focused."""
+- Keep responses concise and action-focused.
+
+🇵🇰 URDU SUPPORT (اردو معاونت):
+- If the user writes in Urdu, respond entirely in Urdu.
+- Urdu examples:
+  - "گروسری خریدنے کا کام شامل کریں" → add_task("گروسری خریدنا")
+  - "میرے کام دکھائیں" → list_tasks("all")
+  - "کام 3 مکمل کریں" → complete_task(3)
+  - "کام حذف کریں" → list_tasks() then delete_task(id)
+- When responding in Urdu, use natural Pakistani Urdu phrasing.
+- Example Urdu response: "✅ بہت اچھا! میں نے 'گروسری خریدنا' آپ کی فہرست میں شامل کر دیا ہے۔"
+- Support mixed Urdu-English (Roman Urdu) as well: "kaam add karo" → add_task"""
 
 
 def build_tool_config():

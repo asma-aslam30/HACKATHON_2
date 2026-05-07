@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: todo-config
+data:
+  GEMINI_MODEL: {{ .Values.backend.env.GEMINI_MODEL }}
+  FRONTEND_URL: {{ .Values.backend.env.FRONTEND_URL }}
+  {{- if .Values.kafka.enabled }}
+  KAFKA_BOOTSTRAP_SERVERS: {{ .Values.kafka.bootstrapServers }}
+  {{- end }}

@@ -13,6 +13,7 @@ load_dotenv()
 
 from db import create_db_and_tables
 from routes.chat import router as chat_router
+from routes.tasks import router as tasks_router
 
 
 @asynccontextmanager
@@ -44,6 +45,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_router)
+app.include_router(tasks_router)
 
 
 @app.get("/")

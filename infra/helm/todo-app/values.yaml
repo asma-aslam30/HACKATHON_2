@@ -1,0 +1,58 @@
+# Default values for todo-app Helm chart
+# Override with: helm install todo-app ./todo-app -f my-values.yaml
+
+replicaCount: 1
+
+backend:
+  image:
+    repository: todo-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  env:
+    GEMINI_MODEL: "gemini-2.5-flash"
+    FRONTEND_URL: "http://todo-frontend-service:3001"
+
+frontend:
+  image:
+    repository: todo-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: NodePort
+    port: 3001
+    nodePort: 30001
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+# Secrets — override in production via --set or secrets manager
+secrets:
+  geminiApiKey: "your-gemini-api-key"
+  databaseUrl: "postgresql://user:pass@host/db?sslmode=require"
+  authSecret: "your-auth-secret"
+
+ingress:
+  enabled: false
+  className: nginx
+  host: todo.local
+
+dapr:
+  enabled: false   # set to true for Phase V
+
+kafka:
+  enabled: false   # set to true for Phase V
+  bootstrapServers: "your-redpanda-host:9092"

@@ -10,7 +10,7 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 
 # Install dependencies only when needed
-COPY frontend/package.json frontend/package-lock.json ./
+COPY todo-app-fullstack/package.json frontend/package-lock.json ./
 RUN npm ci --only=production
 
 # ============================================
@@ -24,7 +24,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 
 # Copy source code
-COPY frontend/ ./
+COPY todo-app-fullstack/ ./
 
 # Build Next.js application
 ENV NEXT_TELEMETRY_DISABLED 1
