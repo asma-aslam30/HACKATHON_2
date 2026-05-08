@@ -1,0 +1,161 @@
+name: CI/CD — Todo App
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository_owner }}
+
+jobs:
+  # ── Backend tests ────────────────────────────────────────────────────────────
+  test-backend:
+    name: Backend — lint & syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install deps
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pip install flake8
+
+      - name: Syntax check
+        run: |
+          cd backend
+          python -m py_compile main.py db.py agent.py
+          python -m py_compile routes/chat.py routes/tasks.py
+          python -m py_compile mcp_server/tools.py models/models.py
+
+      - name: Lint (flake8)
+        run: |
+          cd backend
+          flake8 . --max-line-length=120 --exclude=__pycache__ --count --statistics
+
+  # ── Frontend build ───────────────────────────────────────────────────────────
+  test-frontend:
+    name: Frontend — build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: todo-app-fullstack/package-lock.json
+
+      - name: Install deps
+        run: |
+          cd todo-app-fullstack
+          npm install --legacy-peer-deps --ignore-scripts
+
+      - name: Build
+        run: |
+          cd todo-app-fullstack
+          npx next build
+        env:
+          NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
+          NEXT_PUBLIC_APP_URL: http://localhost:3001
+
+  # ── Docker build ─────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker — build images
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/todo-backend:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/todo-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/todo-frontend:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/todo-frontend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy to Vercel (frontend) ───────────────────────────────────────────────
+  deploy-vercel:
+    name: Deploy frontend → Vercel
+    runs-on: ubuntu-latest
+    needs: [test-frontend]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: ./todo-app-fullstack
+          vercel-args: "--prod"
+
+  # ── Deploy to cloud Kubernetes (Phase V) ─────────────────────────────────────
+  deploy-k8s:
+    name: Deploy → DigitalOcean DOKS (Phase V)
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_K8S == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Configure kubectl
+        run: doctl kubernetes cluster kubeconfig save ${{ secrets.DOKS_CLUSTER_NAME }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install todo-app infra/helm/todo-app \
+            --set backend.image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/todo-backend \
+            --set backend.image.tag=${{ github.sha }} \
+            --set frontend.image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/todo-frontend \
+            --set frontend.image.tag=${{ github.sha }} \
+            --set secrets.geminiApiKey=${{ secrets.GEMINI_API_KEY }} \
+            --set secrets.databaseUrl=${{ secrets.DATABASE_URL }} \
+            --set secrets.authSecret=${{ secrets.AUTH_SECRET }} \
+            --wait --timeout=5m
