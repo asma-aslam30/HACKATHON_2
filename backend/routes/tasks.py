@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from db import get_session
 from models.models import Task, TaskCreate, TaskUpdate, TaskRead
 from kafka.dapr_publisher import publish_task_event
+from routes.auth import get_current_user, verify_user_access, AuthUser
 
 router = APIRouter()
 
@@ -30,7 +31,9 @@ def list_tasks(
     sort: str = "created",
     search: str = "",
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    verify_user_access(user_id, current_user)
     query = select(Task).where(Task.user_id == user_id)
 
     if status == "pending":
@@ -58,7 +61,9 @@ async def create_task(
     user_id: str,
     body: TaskCreate,
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    verify_user_access(user_id, current_user)
     task = Task(
         **body.model_dump(),
         user_id=user_id,
@@ -76,17 +81,19 @@ async def create_task(
 
 
 @router.get("/api/{user_id}/tasks/{task_id}", response_model=TaskRead)
-def get_task(user_id: str, task_id: int, session: Session = Depends(get_session)):
+def get_task(user_id: str, task_id: int, session: Session = Depends(get_session),
+             current_user: AuthUser = Depends(get_current_user)):
+    verify_user_access(user_id, current_user)
     return get_task_or_404(task_id, user_id, session)
 
 
 @router.put("/api/{user_id}/tasks/{task_id}", response_model=TaskRead)
 async def update_task(
-    user_id: str,
-    task_id: int,
-    body: TaskUpdate,
+    user_id: str, task_id: int, body: TaskUpdate,
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    verify_user_access(user_id, current_user)
     task = get_task_or_404(task_id, user_id, session)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(task, field, value)
@@ -99,7 +106,10 @@ async def update_task(
 
 
 @router.delete("/api/{user_id}/tasks/{task_id}", status_code=204)
-async def delete_task(user_id: str, task_id: int, session: Session = Depends(get_session)):
+async def delete_task(user_id: str, task_id: int,
+                      session: Session = Depends(get_session),
+                      current_user: AuthUser = Depends(get_current_user)):
+    verify_user_access(user_id, current_user)
     task = get_task_or_404(task_id, user_id, session)
     title = task.title
     session.delete(task)
@@ -109,10 +119,11 @@ async def delete_task(user_id: str, task_id: int, session: Session = Depends(get
 
 @router.patch("/api/{user_id}/tasks/{task_id}/complete", response_model=TaskRead)
 async def toggle_complete(
-    user_id: str,
-    task_id: int,
+    user_id: str, task_id: int,
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    verify_user_access(user_id, current_user)
     task = get_task_or_404(task_id, user_id, session)
     task.completed = not task.completed
     task.updated_at = datetime.utcnow()

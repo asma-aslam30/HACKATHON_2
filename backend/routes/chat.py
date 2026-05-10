@@ -14,6 +14,8 @@ from models.models import (
 )
 from agent import run_agent
 
+from routes.auth import get_current_user, verify_user_access, AuthUser
+
 router = APIRouter()
 
 
@@ -22,7 +24,9 @@ async def chat(
     user_id: str,
     request: ChatRequest,
     session: Session = Depends(get_session),
+    current_user: AuthUser = Depends(get_current_user),
 ):
+    verify_user_access(user_id, current_user)
     # 1. Get or create conversation
     if request.conversation_id:
         conversation = session.exec(
