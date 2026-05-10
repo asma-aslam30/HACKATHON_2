@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'
+import VoiceButton from '../voice/VoiceButton'
 
 export default function ChatWindow({ userId, conversationId, onConversationCreated }) {
   const [messages, setMessages] = useState([
@@ -112,7 +113,14 @@ export default function ChatWindow({ userId, conversationId, onConversationCreat
 
       {/* Input */}
       <div className="border-t border-gray-200 px-4 py-3">
-        <ChatInput onSend={sendMessage} disabled={loading} />
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <ChatInput onSend={sendMessage} disabled={loading} />
+          </div>
+          <div className="mb-7">
+            <VoiceButton onTranscript={sendMessage} disabled={loading} size="md" />
+          </div>
+        </div>
       </div>
     </div>
   )

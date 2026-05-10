@@ -13,6 +13,7 @@ import Button from '../components/ui/Button'
 import { useKeyboardShortcuts, ShortcutHelp } from '../lib/useKeyboardShortcuts'
 import { initNotifications, rescheduleNotification } from '../lib/notificationService'
 import { getDueDateStatus } from '../lib/dateUtils'
+import VoiceCommandHandler from '../components/voice/VoiceCommandHandler'
 
 const XP_PER_COMPLETION = 10
 const STREAK_BONUS = 5
@@ -351,6 +352,16 @@ export default function HomePage() {
                 </svg>
                 New Task (N)
               </Button>
+              <VoiceCommandHandler
+                userId={user?.id || 'demo-user'}
+                todos={todos}
+                onAddTask={handleCreateTask}
+                onFilterChange={setFilter}
+                onSearch={setSearch}
+                onCompleteTask={handleToggle}
+                onDeleteTask={handleDelete}
+                size="md"
+              />
             </div>
           </div>
         </div>
