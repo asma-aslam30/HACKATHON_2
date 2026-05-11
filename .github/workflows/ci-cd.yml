@@ -11,7 +11,7 @@ env:
   IMAGE_PREFIX: ${{ github.repository_owner }}
 
 jobs:
-  # ── Backend tests ────────────────────────────────────────────────────────────
+  # ── Backend tests ─────────────────────────────────────────────────────────
   test-backend:
     name: Backend — lint & syntax check
     runs-on: ubuntu-latest
@@ -33,15 +33,16 @@ jobs:
         run: |
           cd backend
           python -m py_compile main.py db.py agent.py
-          python -m py_compile routes/chat.py routes/tasks.py
+          python -m py_compile routes/auth.py routes/chat.py routes/tasks.py
           python -m py_compile mcp_server/tools.py models/models.py
+          python -m py_compile kafka/producer.py kafka/dapr_publisher.py
 
       - name: Lint (flake8)
         run: |
           cd backend
-          flake8 . --max-line-length=120 --exclude=__pycache__ --count --statistics
+          flake8 . --max-line-length=120 --exclude=__pycache__,kafka --count --statistics
 
-  # ── Frontend build ───────────────────────────────────────────────────────────
+  # ── Frontend build ────────────────────────────────────────────────────────
   test-frontend:
     name: Frontend — build check
     runs-on: ubuntu-latest
@@ -67,13 +68,20 @@ jobs:
         env:
           NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
           NEXT_PUBLIC_APP_URL: http://localhost:3000
+          # Dummy values so build doesn't fail without real DB
+          DATABASE_URL: postgresql://user:pass@localhost/db
+          DATABASE_URL_UNPOOLED: postgresql://user:pass@localhost/db
+          AUTH_SECRET: ci-dummy-secret-32-characters-ok
 
-  # ── Docker build ─────────────────────────────────────────────────────────────
+  # ── Docker build & push ───────────────────────────────────────────────────
   docker-build:
-    name: Docker — build images
+    name: Docker — build & push images
     runs-on: ubuntu-latest
     needs: [test-backend, test-frontend]
     if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -111,7 +119,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Deploy to Vercel (frontend) ───────────────────────────────────────────────
+  # ── Deploy to Vercel ──────────────────────────────────────────────────────
   deploy-vercel:
     name: Deploy frontend → Vercel
     runs-on: ubuntu-latest
@@ -119,6 +127,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && secrets.VERCEL_TOKEN != ''
     steps:
       - uses: actions/checkout@v4
+
       - name: Deploy to Vercel
         uses: amondnet/vercel-action@v25
         with:
@@ -128,22 +137,28 @@ jobs:
           working-directory: ./todo-app-fullstack
           vercel-args: "--prod"
 
-  # ── Deploy to cloud Kubernetes (Phase V) ─────────────────────────────────────
-  deploy-k8s:
-    name: Deploy → DigitalOcean DOKS (Phase V)
+  # ── Deploy to GKE (Phase V) ───────────────────────────────────────────────
+  deploy-gke:
+    name: Deploy → Google Cloud GKE (Phase V)
     runs-on: ubuntu-latest
     needs: [docker-build]
-    if: github.ref == 'refs/heads/main' && vars.DEPLOY_K8S == 'true'
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_GKE == 'true'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install doctl
-        uses: digitalocean/action-doctl@v2
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Configure kubectl
-        run: doctl kubernetes cluster kubeconfig save ${{ secrets.DOKS_CLUSTER_NAME }}
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials ${{ secrets.GKE_CLUSTER_NAME }} \
+            --region ${{ secrets.GKE_REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
 
       - name: Install Helm
         uses: azure/setup-helm@v4
