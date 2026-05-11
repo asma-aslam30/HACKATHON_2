@@ -6,7 +6,7 @@ Shared secret: BETTER_AUTH_SECRET env var
 
 import os
 import jwt
-from fastapi import Depends, HTTPException, Header
+from fastapi import HTTPException, Header
 from typing import Optional
 
 SECRET = os.getenv("BETTER_AUTH_SECRET", "fallback-secret-change-this")

@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 
 from db import get_session
 from models.models import (
-    Conversation, Message, ChatRequest, ChatResponse, Task
+    Conversation, Message, ChatRequest, ChatResponse
 )
 from agent import run_agent
 

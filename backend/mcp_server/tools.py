@@ -3,10 +3,9 @@ MCP Tools — stateless task operations backed by Neon DB.
 Each tool takes user_id so requests are fully isolated per user.
 """
 
-import json
 from datetime import datetime
 from sqlmodel import Session, select
-from models.models import Task, TaskCreate, TaskUpdate
+from models.models import Task
 
 
 # ── Tool implementations (called by the Gemini agent) ─────────────────────────

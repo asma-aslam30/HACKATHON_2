@@ -5,7 +5,6 @@ to manage todos via MCP tools. Fully stateless per request.
 
 import os
 import json
-from typing import Optional
 import google.generativeai as genai
 from sqlmodel import Session
 
@@ -13,11 +12,12 @@ from mcp_server.tools import GEMINI_TOOLS, TOOL_REGISTRY
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
 
-SYSTEM_PROMPT = """You are a helpful, friendly Todo assistant. You help users manage their task list through natural conversation.
+SYSTEM_PROMPT = """You are a helpful, friendly Todo assistant.
+You help users manage their task list through natural conversation.
 
 You have access to these tools:
 - add_task: Create a new task
-- list_tasks: Show tasks (all, pending, or completed)  
+- list_tasks: Show tasks (all, pending, or completed)
 - complete_task: Mark a task as done
 - delete_task: Remove a task
 - update_task: Edit a task's title, description, or priority

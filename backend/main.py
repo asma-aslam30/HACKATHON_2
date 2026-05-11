@@ -5,15 +5,17 @@ FastAPI + Gemini 2.5 Flash + MCP Tools + Neon PostgreSQL
 
 import os
 from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 
 load_dotenv()
 
-from db import create_db_and_tables
-from routes.chat import router as chat_router
-from routes.tasks import router as tasks_router
+# Local imports after load_dotenv so env vars are available  # noqa: E402
+from db import create_db_and_tables  # noqa: E402
+from routes.chat import router as chat_router  # noqa: E402
+from routes.tasks import router as tasks_router  # noqa: E402
 
 
 @asynccontextmanager
@@ -30,7 +32,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow Next.js frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -38,8 +39,8 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:3001",
         "https://*.vercel.app",
-        "https://*.run.app",       # Google Cloud Run
-        "https://*.web.app",       # Firebase Hosting
+        "https://*.run.app",
+        "https://*.web.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
