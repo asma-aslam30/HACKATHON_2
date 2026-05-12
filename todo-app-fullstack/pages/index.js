@@ -14,6 +14,7 @@ import { useKeyboardShortcuts, ShortcutHelp } from '../lib/useKeyboardShortcuts'
 import { initNotifications, rescheduleNotification } from '../lib/notificationService'
 import { getDueDateStatus } from '../lib/dateUtils'
 import VoiceCommandHandler from '../components/voice/VoiceCommandHandler'
+import NotificationBell from '../components/NotificationBell'
 
 const XP_PER_COMPLETION = 10
 const STREAK_BONUS = 5
@@ -308,6 +309,9 @@ export default function HomePage() {
               <a href="/chat" className="ml-2 px-2.5 py-1 text-xs font-medium bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-full hover:opacity-90 transition-opacity flex items-center gap-1">
                 ✦ AI Chat
               </a>
+              <a href="/teams" className="ml-1 px-2.5 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full hover:bg-gray-200 transition-colors flex items-center gap-1">
+                👥 Teams
+              </a>
             </div>
 
             {/* Search */}
@@ -328,6 +332,7 @@ export default function HomePage() {
             </div>
 
             <div className="flex items-center gap-2">
+              <NotificationBell userId={user?.id} />
               <button
                 onClick={() => setShowShortcuts(true)}
                 className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"

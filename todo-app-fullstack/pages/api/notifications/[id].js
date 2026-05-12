@@ -1,37 +1,27 @@
-/**
- * Notification Detail API - Delete notification
- * DELETE /api/notifications/[id] - Delete a notification
- */
-
-import notificationService from '../../../src/services/notificationService.js';
+import { prisma } from '../../../lib/db'
+import { auth } from '../../../lib/auth'
 
 export default async function handler(req, res) {
-  const userId = req.headers['x-user-id'];
-  const { id } = req.query;
+  const session = await auth.api.getSession({ headers: req.headers }).catch(() => null)
+  const userId = session?.user?.id || req.headers['x-user-id']
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' })
 
-  if (!userId) {
-    return res.status(401).json({ error: 'User ID required' });
+  const { id } = req.query
+
+  // PATCH — mark single notification as read
+  if (req.method === 'PATCH') {
+    await prisma.notification.updateMany({
+      where: { id, userId },
+      data: { read: true, readAt: new Date() }
+    })
+    return res.json({ success: true })
   }
 
-  if (!id) {
-    return res.status(400).json({ error: 'Notification ID required' });
+  // DELETE — delete notification
+  if (req.method === 'DELETE') {
+    await prisma.notification.deleteMany({ where: { id, userId } })
+    return res.json({ success: true })
   }
 
-  if (req.method !== 'DELETE') {
-    res.setHeader('Allow', ['DELETE']);
-    return res.status(405).json({ error: `Method ${req.method} not allowed` });
-  }
-
-  try {
-    const success = await notificationService.deleteNotification(id, userId);
-
-    if (success) {
-      return res.status(204).end();
-    } else {
-      return res.status(404).json({ error: 'Notification not found' });
-    }
-  } catch (error) {
-    console.error('Notification delete API error:', error);
-    return res.status(500).json({ error: error.message || 'Internal server error' });
-  }
+  res.status(405).json({ error: 'Method not allowed' })
 }

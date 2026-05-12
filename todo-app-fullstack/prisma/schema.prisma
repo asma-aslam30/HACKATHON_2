@@ -32,6 +32,9 @@ enum NotificationType {
   task_assigned
   task_completed
   deadline_approaching
+  team_invite
+  team_message
+  comment_added
 }
 
 enum EmailStatus {
@@ -64,6 +67,7 @@ model User {
   createdTeams         Team[]          @relation("TeamCreator")
   teamMemberships      TeamMember[]
   teamMemberInvites    TeamMember[]    @relation("TeamMemberInviter")
+  teamMessages         TeamMessage[]
 
   // Project relations
   ownedProjects        Project[]       @relation("ProjectOwner")
@@ -216,6 +220,19 @@ model TaskTemplate {
   @@map("task_templates")
 }
 
+model TeamMessage {
+  id        String   @id @default(cuid())
+  teamId    String
+  userId    String
+  content   String
+  createdAt DateTime @default(now())
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([teamId, createdAt])
+  @@map("team_messages")
+}
+
 model PomodoroSession {
   id          String   @id @default(cuid())
   userId      String
@@ -333,6 +350,7 @@ model Team {
 
   members     TeamMember[]
   projects    ProjectTeam[]
+  messages    TeamMessage[]
 
   @@map("teams")
 }
