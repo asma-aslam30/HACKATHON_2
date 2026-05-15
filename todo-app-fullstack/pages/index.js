@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/router'
 import { useApp } from '../context/AppContext'
 import TaskCard from '../components/todos/TaskCard'
@@ -13,15 +13,13 @@ import Button from '../components/ui/Button'
 import { useKeyboardShortcuts, ShortcutHelp } from '../lib/useKeyboardShortcuts'
 import { initNotifications, rescheduleNotification } from '../lib/notificationService'
 import { getDueDateStatus } from '../lib/dateUtils'
-import VoiceCommandHandler from '../components/voice/VoiceCommandHandler'
-import NotificationBell from '../components/NotificationBell'
 
 const XP_PER_COMPLETION = 10
 const STREAK_BONUS = 5
 
 export default function HomePage() {
   const router = useRouter()
-  const { user, loading, addNotification } = useApp()
+  const { user, loading, addNotification, logout } = useApp()
 
   // ── Task state ──────────────────────────────────────────────
   const [todos, setTodos] = useState([])
@@ -48,6 +46,17 @@ export default function HomePage() {
   const [userStats, setUserStats] = useState({
     totalXP: 0, level: 1, streak: 0, lastStreakDate: null, badges: [], lastXPGain: 0,
   })
+
+  // ── Close user menu on outside click ─────────────────────────
+  useEffect(() => {
+    function handleOutsideClick(e) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setUserMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [])
 
   // ── Keyboard shortcuts ────────────────────────────────────────
   const shortcuts = [
@@ -294,84 +303,7 @@ export default function HomePage() {
   ]
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-indigo-600 rounded-xl flex items-center justify-center">
-                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                </svg>
-              </div>
-              <span className="font-bold text-gray-900 text-lg">TodoApp</span>
-              <a href="/chat" className="ml-2 px-2.5 py-1 text-xs font-medium bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-full hover:opacity-90 transition-opacity flex items-center gap-1">
-                ✦ AI Chat
-              </a>
-              <a href="/teams" className="ml-1 px-2.5 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full hover:bg-gray-200 transition-colors flex items-center gap-1">
-                👥 Teams
-              </a>
-            </div>
-
-            {/* Search */}
-            <div className="flex-1 max-w-md mx-6">
-              <div className="relative">
-                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                <input
-                  data-search
-                  type="text"
-                  placeholder="Search tasks… (/)"
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-gray-50"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <NotificationBell userId={user?.id} />
-              <button
-                onClick={() => setShowShortcuts(true)}
-                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
-                title="Keyboard shortcuts (?)"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </button>
-              <button
-                onClick={() => setShowTemplates(true)}
-                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
-                title="Templates"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                </svg>
-              </button>
-              <Button onClick={() => setShowCreateModal(true)} size="sm">
-                <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
-                New Task (N)
-              </Button>
-              <VoiceCommandHandler
-                userId={user?.id || 'demo-user'}
-                todos={todos}
-                onAddTask={handleCreateTask}
-                onFilterChange={setFilter}
-                onSearch={setSearch}
-                onCompleteTask={handleToggle}
-                onDeleteTask={handleDelete}
-                size="md"
-              />
-            </div>
-          </div>
-        </div>
-      </header>
-
+    <div className="space-y-5">
       {/* Overdue banner */}
       {overdueCount > 0 && filter !== 'overdue' && (
         <div
@@ -382,10 +314,10 @@ export default function HomePage() {
         </div>
       )}
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
 
-          {/* Sidebar */}
+          {/* Right sidebar panel - gamification, time tracking, pomodoro */}
           <aside className="lg:col-span-1 space-y-4">
             <GamificationPanel
               currentXP={userStats.totalXP % 100}
@@ -400,9 +332,15 @@ export default function HomePage() {
 
           {/* Main content */}
           <main className="lg:col-span-3 space-y-5">
-            {/* Filters & sort */}
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="flex flex-wrap gap-1.5">
+            {/* Toolbar: New Task + Filters + Sort */}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={() => setShowCreateModal(true)} size="sm">
+                <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                New Task
+              </Button>
+              <div className="flex flex-wrap gap-1.5 ml-1">
                 {filterOptions.map(opt => (
                   <button
                     key={opt.value}
@@ -499,6 +437,10 @@ export default function HomePage() {
         onSubtaskToggle={handleSubtaskToggle}
         onSubtaskDelete={handleSubtaskDelete}
         onEdit={(t) => { setDetailTask(null); setEditingTask(t) }}
+        onTaskUpdate={(updatedTodo) => {
+          setTodos(prev => prev.map(t => t.id === updatedTodo.id ? updatedTodo : t))
+          setDetailTask(updatedTodo)
+        }}
       />
 
       {/* Templates Manager */}

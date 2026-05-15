@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import Layout from '../../components/layout/Layout'
 import { useApp } from '../../context/AppContext'
 import Button from '../../components/ui/Button'
 import Modal from '../../components/ui/Modal'
@@ -67,7 +66,7 @@ export default function SharedListsPage() {
   }
 
   return (
-    <Layout>
+    <>
       <div className="space-y-6">
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -155,7 +154,7 @@ export default function SharedListsPage() {
           </div>
         </form>
       </Modal>
-    </Layout>
+    </>
   )
 }
 

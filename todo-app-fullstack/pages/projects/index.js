@@ -7,13 +7,14 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { Plus, FolderKanban, Search, Filter } from 'lucide-react';
 import { useStore } from '../../lib/store';
+import { useApp } from '../../context/AppContext';
 import ProjectCard from '../../components/projects/ProjectCard';
 import ProjectForm from '../../components/projects/ProjectForm';
 
 export default function ProjectsPage() {
   const router = useRouter();
+  const { user } = useApp();
   const { projects, setProjects, addProject, loading, setLoading } = useStore();
-  const user = useStore(state => state.user);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -97,8 +98,7 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-6xl mx-auto px-4 py-8">
+    <div className="max-w-6xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
           <div>
@@ -181,7 +181,6 @@ export default function ProjectsPage() {
             ))}
           </div>
         )}
-      </div>
 
       {/* Create Project Modal */}
       {showCreateModal && (

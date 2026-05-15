@@ -5,11 +5,15 @@ import { useState, useRef, useEffect, useCallback } from 'react'
  * Calls onTranscript(text) when speech is recognized
  */
 export default function VoiceButton({ onTranscript, disabled, size = 'md' }) {
+  const [mounted, setMounted] = useState(false)
   const [state, setState] = useState('idle') // idle | listening | processing | error
   const [transcript, setTranscript] = useState('')
   const recognitionRef = useRef(null)
 
-  const isSupported = typeof window !== 'undefined' &&
+  // Only mount on client to avoid SSR hydration mismatch
+  useEffect(() => { setMounted(true) }, [])
+
+  const isSupported = mounted &&
     ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
 
   const startListening = useCallback(() => {
@@ -55,7 +59,8 @@ export default function VoiceButton({ onTranscript, disabled, size = 'md' }) {
 
   useEffect(() => () => recognitionRef.current?.stop(), [])
 
-  if (!isSupported) return null
+  // Don't render anything until client-side mounted
+  if (!mounted || !isSupported) return null
 
   const sizes = {
     sm: 'w-8 h-8 text-sm',

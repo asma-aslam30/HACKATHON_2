@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import Layout from '../../components/layout/Layout'
 import { useApp } from '../../context/AppContext'
 
 export default function DashboardPage() {
@@ -28,8 +27,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <Layout>
-      <div className="space-y-6">
+    <div className="space-y-6">
         {/* Header */}
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Team Dashboard</h1>
@@ -165,8 +163,7 @@ export default function DashboardPage() {
           </>
         )}
       </div>
-    </Layout>
-  )
+    )
 }
 
 function StatCard({ title, value, subtitle, icon, color }) {
