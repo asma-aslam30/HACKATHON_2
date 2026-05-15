@@ -4,7 +4,9 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY todo-app-fullstack/package.json todo-app-fullstack/package-lock.json* ./
-RUN npm install --legacy-peer-deps --ignore-scripts
+COPY todo-app-fullstack/prisma ./prisma/
+RUN npm install --legacy-peer-deps
+RUN npx prisma generate
 
 # Stage 2: Build
 FROM node:20-alpine AS builder
@@ -14,9 +16,14 @@ COPY todo-app-fullstack/ ./
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
-ENV NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
-ENV NEXT_PUBLIC_APP_URL=http://localhost:3000
 
+# These are build-time placeholders; real values come from Cloud Run env vars
+ARG NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
+ENV NEXT_PUBLIC_BACKEND_URL=$NEXT_PUBLIC_BACKEND_URL
+ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
+
+RUN npx prisma generate
 RUN npx next build
 
 # Stage 3: Runner
@@ -30,10 +37,8 @@ ENV HOSTNAME="0.0.0.0"
 
 RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
 
-# public/ may be empty but must exist
 RUN mkdir -p ./public
 COPY --from=builder /app/public ./public
-
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
